@@ -1,5 +1,14 @@
 node_modules/
-.env
+out/
+dist/
+release/
 *.log
+.env
+.DS_Store
+graphify-out/
+__pycache__/
+*.pyc
+
+# Données réelles HFSQL (ne jamais commiter)
 DOSSIER/
 samples/
