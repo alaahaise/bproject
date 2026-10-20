@@ -46,19 +46,39 @@ async function getSettingNumber(
 
 /**
  * Alloue le prochain numéro de la portée (type + année).
- * `LAST_INSERT_ID(expr)` fait que l'UPDATE renvoie la nouvelle valeur ; sur la
- * toute première ligne, l'INSERT n'a pas d'AUTO_INCREMENT et renvoie 0.
+ *
+ * Le compteur peut être en retard sur les tickets déjà présents (reprise d'une
+ * base, ancien numéro créé hors compteur). On prend donc le maximum entre sa
+ * valeur et le plus grand numéro existant : sinon chaque tentative réalloue le
+ * même numéro et échoue sur `uq_ops_ticket`. La ligne est verrouillée jusqu'à
+ * la fin de la transaction, donc deux postes restent sérialisés.
  */
 async function allocateTicket(conn: PoolConnection, type: OperationType): Promise<string> {
   const year = new Date().getFullYear()
   const scope = counterScope(type, year)
+
   await conn.query(
-    `INSERT INTO counters (scope, value) VALUES (?, 1)
-       ON DUPLICATE KEY UPDATE value = LAST_INSERT_ID(value + 1)`,
+    `INSERT INTO counters (scope, value) VALUES (?, 0)
+       ON DUPLICATE KEY UPDATE value = value`,
     [scope]
   )
-  const [rows] = await conn.query<RowDataPacket[]>('SELECT LAST_INSERT_ID() AS seq')
-  const sequence = Number(rows[0]?.seq ?? 0) || 1
+  const [counterRows] = await conn.query<RowDataPacket[]>(
+    'SELECT value FROM counters WHERE scope = ? FOR UPDATE',
+    [scope]
+  )
+  const [maxRows] = await conn.query<RowDataPacket[]>(
+    `SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(ticket_no, '-', -1) AS UNSIGNED)), 0)
+              AS max_sequence
+       FROM operations
+      WHERE ticket_no LIKE ?`,
+    [`${scope}-%`]
+  )
+
+  const current = Number(counterRows[0]?.value ?? 0)
+  const existing = Number(maxRows[0]?.max_sequence ?? 0)
+  const sequence = Math.max(current, existing) + 1
+  await conn.query('UPDATE counters SET value = ? WHERE scope = ?', [sequence, scope])
+
   return formatTicketNo(type, year, sequence, await getSettingNumber(conn, DIGITS_KEY, 6))
 }
 

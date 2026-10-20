@@ -78,6 +78,23 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
     expect(Number(second.ticketNo.slice(-6))).toBe(Number(first.ticketNo.slice(-6)) + 1)
   })
 
+  it('reprend la numérotation si le compteur est en retard sur les tickets existants', async () => {
+    const first = await operations.create({ type: 'SORTIE' }, user)
+    const scope = first.ticketNo.slice(0, first.ticketNo.lastIndexOf('-'))
+    const sequence = Number(first.ticketNo.slice(-6))
+
+    const conn = await pool.getPool().getConnection()
+    try {
+      await conn.query('UPDATE counters SET value = ? WHERE scope = ?', [sequence - 1, scope])
+    } finally {
+      conn.release()
+    }
+
+    const second = await operations.create({ type: 'SORTIE' }, user)
+    expect(Number(second.ticketNo.slice(-6))).toBe(sequence + 1)
+    expect(second.ticketNo).not.toBe(first.ticketNo)
+  })
+
   it('calcule net et écart à la 2e pesée, sans enregistrer le ticket', async () => {
     const ticket = await operations.create(
       { type: 'ENTREE', lines: [{ productCode: 'CIMENT', quantityKg: 5000 }] },
