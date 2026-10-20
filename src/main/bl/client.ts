@@ -1,5 +1,5 @@
 /**
- * Client du service BL (API Node/HFSQL, lecture seule).
+ * Client du service BL (src/bl-api : API Node/HFSQL, lecture seule).
  *
  * L'appel part du processus principal : le renderer ne fait jamais de fetch
  * direct, et l'adresse du service est validée avant d'être enregistrée.
@@ -9,7 +9,8 @@ import type { BlLookup } from '@shared/types'
 import { buildBlLookup } from '@shared/domain/bl'
 
 const DEFAULT_BL_API_URL = 'http://127.0.0.1:3100'
-const REQUEST_TIMEOUT_MS = 8000
+// Le service peut devoir rouvrir la connexion HFSQL (jusqu'à 6 s) avant ses requêtes.
+const REQUEST_TIMEOUT_MS = 20_000
 const MAX_BODY_LENGTH = 2_000_000
 
 const nullableString = z.string().nullable().optional()

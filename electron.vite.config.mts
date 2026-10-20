@@ -36,7 +36,19 @@ const injectCsp = {
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
-    resolve: { alias: shared }
+    resolve: { alias: shared },
+    build: {
+      rollupOptions: {
+        // Deux points d'entrée du processus principal : l'application et le
+        // service BL (processus séparé, voir src/main/bl/process.ts), plus un
+        // petit outil de diagnostic en ligne de commande.
+        input: {
+          index: resolve('src/main/index.ts'),
+          'bl-api': resolve('src/bl-api/main.ts'),
+          'bl-cli': resolve('src/bl-api/cli.ts')
+        }
+      }
+    }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

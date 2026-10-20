@@ -22,10 +22,16 @@
     "test:db:up": "wsl -e bash tools/db-it.sh",
     "test:db:down": "wsl -e bash tools/db-it-stop.sh",
     "db:check-schema": "wsl -e bash tools/migrate-check.sh",
-    "rebuild": "electron-builder install-app-deps"
+    "rebuild": "electron-builder install-app-deps",
+    "bl:start": "electron-vite build && node out/main/bl-api.js",
+    "bl:probe": "electron-vite build && node out/main/bl-cli.js probe",
+    "bl:export": "electron-vite build && node out/main/bl-cli.js export"
   },
   "dependencies": {
+    "dotenv": "^18.0.8",
+    "express": "^5.3.0",
     "mysql2": "^3.24.6",
+    "odbc": "^2.6.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.4",
@@ -34,6 +40,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -48,5 +55,8 @@
     "typescript-eslint": "^8.71.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.5"
+  },
+  "allowScripts": {
+    "odbc@2.6.0": true
   }
 }

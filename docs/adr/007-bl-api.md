@@ -14,7 +14,7 @@ est en lecture seule côté API, et le renderer ne doit jamais toucher à une ba
 ## Décision
 
 - Le processus principal appelle l'API HTTP `GET /api/bl/:number` via un client
-  typé (`src/main/bl-api.ts`), puis expose le résultat par le canal IPC
+  typé (`src/main/bl/client.ts`), puis expose le résultat par le canal IPC
   `bl:lookup` après validation de l'entrée.
 - L'adresse du service est configurable dans `settings.json` (écran Paramètres)
   et retombe sur `http://127.0.0.1:3100` ou `BL_API_URL`.
@@ -33,6 +33,16 @@ est en lecture seule côté API, et le renderer ne doit jamais toucher à une ba
   (donc incomplète) et un avertissement demande à l'opérateur de saisir les kg.
   Aucun poids n'est inventé.
 - Un total partiel n'est jamais présenté comme le total du BL.
+
+## Mise à jour (structure)
+
+Le service vit désormais dans le même dépôt et la même chaîne TypeScript :
+`src/bl-api/` (service), `src/shared/domain/bl-number.ts` et `bl-weight.ts`
+(logique pure testée), `src/main/bl/` (client + démarrage). Il reste un processus
+séparé (dépendance native `odbc`), compilé avec l'application en `out/main/bl-api.js`.
+Le service ne se connecte plus à HFSQL au démarrage : `GET /api/health` indique que
+le service tourne, `GET /api/status` l'état de la base, et une base injoignable donne
+un `503` explicite sans empêcher la saisie manuelle.
 
 ## Conséquences
 

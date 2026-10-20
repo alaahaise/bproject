@@ -6,7 +6,12 @@ agent session. Follow it; when it conflicts with a skill, this file wins.
 ## Stack and layout
 
 - TypeScript everywhere. No plain `.js` source files.
-- `src/main/` — Electron main process (Node.js, full privileges).
+- `src/main/` — Electron main process (Node.js, full privileges). `src/main/bl/` is the
+  client of the BL service and the code that starts it.
+- `src/bl-api/` — the BL service: a **separate Node process** (Express + native `odbc`)
+  that reads HFSQL, read-only. Built as its own entry (`out/main/bl-api.js`). It must
+  never be imported by `src/main/` (native dependency); share pure logic through
+  `src/shared/` instead.
 - `src/preload/` — the only bridge between main and renderer.
 - `src/renderer/` — UI (browser context, treat as untrusted).
 - `src/shared/` — types and pure logic used by both processes.
@@ -86,7 +91,9 @@ agent session. Follow it; when it conflicts with a skill, this file wins.
 - The printed ticket and the on-screen preview are the same HTML
   (`src/main/ticket-html.ts`): `ops.html` renders it in the app, `ops.print`
   sends it to the printer. Change one, both change.
-- `git` is not installed on this machine: there is no version control.
+- The repo root is the app (it used to be a `balance/` subfolder next to a separate API).
+  The BL service contract is checked by `src/bl-api/contract.test.ts`; the fake database
+  in tests does not validate SQL against HFSQL — use `npm run bl:probe` for that.
 
 ## Skills
 

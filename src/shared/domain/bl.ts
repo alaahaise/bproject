@@ -3,6 +3,7 @@
  * pesée. Aucune dépendance Electron/Node : testable sans lancer l'application.
  */
 import type { BlLookup, BlLookupLine, BlWeightSource } from '../types'
+import { positive, summarizeWeights } from './bl-weight'
 
 export interface BlApiLine {
   code?: string | null
@@ -30,15 +31,6 @@ function finite(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function positive(value: unknown): number | null {
-  const number = finite(value)
-  return number !== null && number > 0 ? number : null
-}
-
-function round3(value: number): number {
-  return Math.round((value + Number.EPSILON) * 1000) / 1000
-}
-
 export function buildBlLookup(payload: BlApiPayload): BlLookup {
   const lines: BlLookupLine[] = []
 
@@ -57,17 +49,16 @@ export function buildBlLookup(payload: BlApiPayload): BlLookup {
     })
   }
 
-  const known = lines.reduce((sum, line) => sum + (line.weightKg ?? 0), 0)
-  const unknownWeightLines = lines.filter((line) => line.weightKg === null).length
-  const weightComplete = lines.length > 0 && unknownWeightLines === 0
+  const { totalWeightKg, knownWeightKg, weightComplete, unknownWeightLines } =
+    summarizeWeights(lines)
 
   return {
     reference: payload.reference.trim(),
     date: clean(payload.date),
     clientName: clean(payload.clientName),
     clientCode: clean(payload.clientCode),
-    totalWeightKg: weightComplete ? round3(known) : null,
-    knownWeightKg: round3(known),
+    totalWeightKg,
+    knownWeightKg,
     weightComplete,
     unknownWeightLines,
     lines

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { blApiBaseUrl, isLocalBlApiUrl, lookupBl } from './bl-api'
+import { blApiBaseUrl, isLocalBlApiUrl, lookupBl } from './client'
 
 const payload = {
   found: true,

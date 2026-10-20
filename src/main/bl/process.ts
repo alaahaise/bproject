@@ -12,9 +12,9 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { app } from 'electron'
-import { blApiBaseUrl, isLocalBlApiUrl } from './bl-api'
+import { blApiBaseUrl, isLocalBlApiUrl } from './client'
 
 const START_TIMEOUT_MS = 20_000
 const HEALTH_TIMEOUT_MS = 1_000
@@ -47,14 +47,18 @@ let childBase: string | null = null
 let starting: Promise<void> | null = null
 let stopping = false
 
-function apiRoot(): string {
-  return app.isPackaged
-    ? join(process.resourcesPath, 'bl-api')
-    : resolve(app.getAppPath(), '..')
+/**
+ * Le service est compilé avec l'application (electron.vite.config.mts) : son
+ * point d'entrée `bl-api.js` est à côté de `index.js`, en développement comme
+ * en production.
+ */
+function apiScript(): string {
+  return join(__dirname, 'bl-api.js')
 }
 
-function apiScript(): string {
-  return join(apiRoot(), 'src', 'server.js')
+/** Dossier de travail du service : c'est là qu'il cherche son fichier `.env`. */
+function apiCwd(): string {
+  return app.isPackaged ? process.resourcesPath : app.getAppPath()
 }
 
 function wait(ms: number): Promise<void> {
@@ -73,9 +77,16 @@ async function isHealthy(base: string): Promise<boolean> {
   }
 }
 
+// Dernières lignes écrites par le service : elles expliquent un arrêt au
+// démarrage (HFSQL_CONN absent, port déjà pris…) mieux qu'un simple code de sortie.
+const MAX_TAIL = 600
+let outputTail = ''
+
 function logChunk(stream: 'stdout' | 'stderr', chunk: Buffer): void {
   const text = chunk.toString('utf8').trim()
-  if (text) safeLog('log', `[bl-api:${stream}] ${text}`)
+  if (!text) return
+  outputTail = `${outputTail}\n${text}`.slice(-MAX_TAIL)
+  safeLog('log', `[bl-api:${stream}] ${text}`)
 }
 
 function stopChild(processToStop: ChildProcess): void {
@@ -100,7 +111,8 @@ async function waitForHealthy(base: string, processToWait: ChildProcess): Promis
   while (Date.now() < deadline) {
     if (processToWait.exitCode !== null) {
       throw new Error(
-        `Le service BL s'est arrêté au démarrage (code ${processToWait.exitCode}).`
+        `Le service BL s'est arrêté au démarrage (code ${processToWait.exitCode}).` +
+          (outputTail.trim() ? ` ${outputTail.trim().split('\n').slice(-2).join(' ')}` : '')
       )
     }
     if (await isHealthy(base)) return
@@ -115,7 +127,6 @@ async function start(base: string): Promise<void> {
     throw new Error(`Service BL introuvable : ${script}`)
   }
 
-  const root = apiRoot()
   const url = new URL(base)
   const port = url.port || (url.protocol === 'https:' ? '443' : '80')
   // Le service local n'a pas d'authentification : quand l'adresse par défaut
@@ -129,8 +140,9 @@ async function start(base: string): Promise<void> {
   }
 
   stopping = false
+  outputTail = ''
   const processToStart = spawn(process.execPath, [script], {
-    cwd: root,
+    cwd: apiCwd(),
     env: environment,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true

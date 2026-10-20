@@ -1,6 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import { ensureAdmin } from './auth'
-import { ensureBlApi, stopBlApi } from './bl-api-process'
+import { ensureBlApi, stopBlApi } from './bl/process'
 import { migrate } from './db/migrate'
 import * as pool from './db/pool'
 import { registerIpc } from './ipc'
