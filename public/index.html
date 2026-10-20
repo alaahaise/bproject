@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>Recherche BL — CASPM</title>
+    <style>
+      :root {
+        --bg: #f4f6f8;
+        --card: #ffffff;
+        --ink: #1d2733;
+        --muted: #667085;
+        --line: #dfe4ea;
+        --accent: #0f6b5c;
+        --accent-dark: #0b5348;
+        --danger: #b42318;
+        --danger-bg: #fef3f2;
+        --warn-bg: #fffaeb;
+        --warn-line: #fedf89;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: var(--ink);
+        background: var(--bg);
+        line-height: 1.45;
+      }
+
+      .wrap {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 32px 20px 64px;
+      }
+
+      h1 {
+        font-size: 24px;
+        margin: 0 0 4px;
+      }
+
+      .sub {
+        color: var(--muted);
+        margin: 0 0 24px;
+        font-size: 14px;
+      }
+
+      .search {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
+      }
+
+      .search input {
+        height: 44px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0 12px;
+        font-size: 16px;
+        outline: none;
+      }
+
+      .search input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgb(15 107 92 / 12%);
+      }
+
+      #bl {
+        flex: 1 1 260px;
+      }
+
+      #year {
+        flex: 0 1 120px;
+      }
+
+      button {
+        height: 44px;
+        border: 0;
+        border-radius: 8px;
+        padding: 0 20px;
+        font-size: 15px;
+        font-weight: 600;
+        color: #fff;
+        background: var(--accent);
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--accent-dark);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: wait;
+      }
+
+      .hint {
+        margin: 10px 2px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 4px;
+        color: var(--muted);
+        font-size: 14px;
+        white-space: nowrap;
+      }
+
+      .check input {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent);
+      }
+
+      .card {
+        margin-top: 22px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
+        overflow: hidden;
+      }
+
+      .card-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-start;
+        padding: 18px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .ref {
+        font-size: 20px;
+        font-weight: 700;
+        margin: 0;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 4px;
+      }
+
+      .client {
+        text-align: right;
+        font-size: 14px;
+      }
+
+      .client strong {
+        display: block;
+        font-size: 15px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+
+      th,
+      td {
+        padding: 11px 20px;
+        text-align: left;
+        border-bottom: 1px solid var(--line);
+      }
+
+      th {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        background: #fafbfc;
+      }
+
+      td.num,
+      th.num {
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .totals {
+        display: flex;
+        justify-content: flex-end;
+        gap: 28px;
+        padding: 16px 20px;
+        border-top: 1px solid var(--line);
+        background: #fafbfc;
+        font-size: 14px;
+      }
+
+      .totals b {
+        font-size: 16px;
+      }
+
+      .notice {
+        margin-top: 22px;
+        padding: 14px 16px;
+        border-radius: 10px;
+        font-size: 14px;
+      }
+
+      .notice.error {
+        color: var(--danger);
+        background: var(--danger-bg);
+        border: 1px solid #fecdca;
+      }
+
+      .notice.warn {
+        background: var(--warn-bg);
+        border: 1px solid var(--warn-line);
+      }
+
+      .candidates {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .candidates button {
+        height: 36px;
+        padding: 0 14px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--ink);
+        background: #fff;
+        border: 1px solid var(--line);
+      }
+
+      .candidates button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: #fff;
+      }
+
+      .empty {
+        padding: 28px 20px;
+        color: var(--muted);
+        text-align: center;
+        font-size: 14px;
+      }
+
+      .details {
+        margin-top: 22px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
+      }
+
+      .details summary {
+        padding: 16px 20px;
+        cursor: pointer;
+        font-weight: 600;
+        color: var(--accent);
+      }
+
+      .details .body {
+        padding: 0 20px 20px;
+      }
+
+      .details .body > p {
+        margin: 0 0 14px;
+        font-size: 13px;
+      }
+
+      .details a {
+        color: var(--accent);
+      }
+
+      .group + .group {
+        margin-top: 20px;
+      }
+
+      .group h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+
+      .field-table {
+        font-size: 13px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      .field-table td {
+        padding: 7px 10px;
+        vertical-align: top;
+      }
+
+      .field-table td:first-child {
+        width: 34%;
+        color: var(--muted);
+      }
+
+      .field-table code {
+        font-size: 12px;
+        word-break: break-word;
+      }
+
+      .field-table td:last-child {
+        word-break: break-word;
+      }
+
+      @media (max-width: 640px) {
+        .card-head {
+          flex-direction: column;
+        }
+
+        .client {
+          text-align: left;
+        }
+
+        th,
+        td {
+          padding: 10px 12px;
+        }
+
+        .totals {
+          padding: 14px 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Recherche Bon de Livraison</h1>
+      <p class="sub">
+        Saisissez le numéro du BL pour afficher le client et les produits livrés.
+      </p>
+
+      <form class="search" id="form" autocomplete="off">
+        <input
+          id="bl"
+          name="bl"
+          placeholder="BL26-05255 ou 5255"
+          aria-label="Numéro de BL"
+          required
+        />
+        <input
+          id="year"
+          name="year"
+          placeholder="Année (optionnel)"
+          aria-label="Année"
+          inputmode="numeric"
+          maxlength="4"
+        />
+        <button id="submit" type="submit">Rechercher</button>
+        <label class="check">
+          <input id="full" type="checkbox" />
+          Tous les champs
+        </label>
+      </form>
+      <p class="hint">
+        Exemples : BL26-05255, BL2605255, 5255 (ajoutez l’année si le numéro
+        existe sur plusieurs années).
+      </p>
+
+      <div id="output"></div>
+    </div>
+
+    <script>
+      const form = document.getElementById('form');
+      const blInput = document.getElementById('bl');
+      const yearInput = document.getElementById('year');
+      const submitButton = document.getElementById('submit');
+      const fullInput = document.getElementById('full');
+      const output = document.getElementById('output');
+
+      const money = new Intl.NumberFormat('fr-FR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+
+      const weight = new Intl.NumberFormat('fr-FR', {
+        minimumFractionDigits: 3,
+        maximumFractionDigits: 3,
+      });
+
+      function esc(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      function formatMoney(value) {
+        return value === null || value === undefined
+          ? '—'
+          : money.format(Number(value));
+      }
+
+      function formatWeight(value) {
+        return value === null || value === undefined
+          ? '—'
+          : weight.format(Number(value));
+      }
+
+      function formatDate(value) {
+        if (!value) return '—';
+        const [year, month, day] = value.split('-');
+        return `${day}/${month}/${year}`;
+      }
+
+      function notice(kind, html) {
+        output.innerHTML = `<div class="notice ${kind}">${html}</div>`;
+      }
+
+      function truncate(value, max = 400) {
+        const text = String(value ?? '');
+        return text.length > max ? `${text.slice(0, max)}…` : text;
+      }
+
+      function fieldTable(object, title) {
+        if (!object) return '';
+
+        const rows = Object.entries(object)
+          .map(
+            ([key, value]) =>
+              `<tr><td><code>${esc(key)}</code></td><td>${esc(
+                truncate(value)
+              )}</td></tr>`
+          )
+          .join('');
+
+        return `
+          <div class="group">
+            <h3>${esc(title)} · ${Object.keys(object).length} champ(s)</h3>
+            <table class="field-table"><tbody>${rows}</tbody></table>
+          </div>`;
+      }
+
+      function renderFull(full, reference) {
+        const parts = [
+          fieldTable(full.header, 'BL — Mouvement'),
+          fieldTable(full.client, 'Client — Tiers'),
+        ];
+
+        full.lines.forEach((entry, index) => {
+          parts.push(fieldTable(entry.line, `Ligne ${index + 1} — Ligne_MT`));
+          if (entry.article) {
+            parts.push(fieldTable(entry.article, `Article ${index + 1}`));
+          }
+        });
+
+        const total =
+          Object.keys(full.header || {}).length +
+          Object.keys(full.client || {}).length +
+          full.lines.reduce(
+            (sum, entry) =>
+              sum +
+              Object.keys(entry.line || {}).length +
+              Object.keys(entry.article || {}).length,
+            0
+          );
+
+        const jsonUrl = `/api/bl/${encodeURIComponent(reference)}?full=1`;
+
+        return `
+          <details class="details">
+            <summary>Toutes les données disponibles (${total} champs)</summary>
+            <div class="body">
+              <p>
+                Tous les champs non vides renvoyés par HFSQL.
+                <a href="${jsonUrl}" target="_blank" rel="noopener">Ouvrir le JSON complet</a>
+                · <a href="/api/schema" target="_blank" rel="noopener">Voir le schéma</a>
+              </p>
+              ${parts.join('')}
+            </div>
+          </details>`;
+      }
+
+      function render(result) {
+        const { bl, lines } = result;
+
+        const rows = lines
+          .map(
+            (line, index) => `
+              <tr>
+                <td class="num">${index + 1}</td>
+                <td>${esc(line.code || '—')}</td>
+                <td>${esc(line.name || '—')}</td>
+                <td class="num">${formatMoney(line.quantity)}</td>
+                <td class="num">${formatMoney(line.packages)}</td>
+                <td class="num">${formatWeight(line.weightKg)}</td>
+                <td class="num">${formatMoney(line.unitPriceHt)}</td>
+                <td class="num">${formatMoney(line.totalHt)}</td>
+              </tr>`
+          )
+          .join('');
+
+        const weightTotal = bl.weightComplete
+          ? formatWeight(bl.totalWeightKg)
+          : bl.unknownWeightLines > 0 && bl.knownWeightKg > 0
+            ? `${formatWeight(bl.knownWeightKg)} (partiel)`
+            : 'non renseigné';
+
+        output.innerHTML = `
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <h2 class="ref">${esc(bl.reference || 'BL ' + bl.number)}</h2>
+                <div class="meta">
+                  Date : ${formatDate(bl.date)}${
+                    bl.deliveryDate
+                      ? ` · Livraison : ${formatDate(bl.deliveryDate)}`
+                      : ''
+                  } · ${bl.lineCount} ligne(s)
+                </div>
+              </div>
+              <div class="client">
+                <span class="meta">Client</span>
+                <strong>${esc(bl.client?.name || '—')}</strong>
+                <span class="meta">Code : ${esc(bl.client?.code || '—')}</span>
+                ${bl.client?.owner ? `<span class="meta">Propriétaire : ${esc(bl.client.owner)}</span>` : ''}
+                ${bl.client?.activity ? `<span class="meta">Activité : ${esc(bl.client.activity)}</span>` : ''}
+                ${bl.client?.phone ? `<span class="meta">Tél. : ${esc(bl.client.phone)}</span>` : ''}
+              </div>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th class="num">#</th>
+                  <th>Code</th>
+                  <th>Produit</th>
+                  <th class="num">Qté</th>
+                  <th class="num">Colis</th>
+                  <th class="num">Poids (kg)</th>
+                  <th class="num">PU HT</th>
+                  <th class="num">Total HT</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows || '<tr><td colspan="8" class="empty">Aucune ligne.</td></tr>'}
+              </tbody>
+            </table>
+            <div class="totals">
+              <span>Poids BL <b>${weightTotal}</b></span>
+              <span>Total HT <b>${formatMoney(bl.totalHt)}</b></span>
+              <span>Total TTC <b>${formatMoney(bl.totalTtc)}</b></span>
+            </div>
+          </div>
+          ${result.full ? renderFull(result.full, bl.reference) : ''}`;
+      }
+
+      function renderCandidates(data) {
+        const buttons = data.candidates
+          .map(
+            (candidate) => `
+              <button type="button"
+                      data-ref="${esc(candidate.reference)}"
+                      data-year="${esc(candidate.year)}">
+                ${esc(candidate.reference)} · ${esc(candidate.client?.name || '—')}
+              </button>`
+          )
+          .join('');
+
+        notice(
+          'warn',
+          `<strong>Plusieurs BL portent ce numéro.</strong>
+           <div>${esc(data.message)}</div>
+           <div class="candidates">${buttons}</div>`
+        );
+
+        output.querySelectorAll('.candidates button').forEach((button) => {
+          button.addEventListener('click', () => {
+            blInput.value = button.dataset.ref;
+            yearInput.value = button.dataset.year;
+            form.requestSubmit();
+          });
+        });
+      }
+
+      async function search(event) {
+        event.preventDefault();
+        const number = blInput.value.trim();
+        const year = yearInput.value.trim();
+        if (!number) return;
+
+        submitButton.disabled = true;
+        output.innerHTML = '<div class="empty">Recherche…</div>';
+
+        try {
+          const params = new URLSearchParams();
+          if (year) params.set('year', year);
+          if (fullInput.checked) params.set('full', '1');
+          const queryString = params.toString();
+          const response = await fetch(
+            `/api/bl/${encodeURIComponent(number)}${
+              queryString ? `?${queryString}` : ''
+            }`
+          );
+          const data = await response.json();
+
+          if (response.status === 409) {
+            renderCandidates(data);
+            return;
+          }
+
+          if (!response.ok) {
+            notice('error', esc(data.message || 'BL introuvable.'));
+            return;
+          }
+
+          render(data);
+        } catch (error) {
+          notice('error', 'Erreur réseau. Vérifiez que l’API est démarrée.');
+        } finally {
+          submitButton.disabled = false;
+        }
+      }
+
+      form.addEventListener('submit', search);
+    </script>
+  </body>
+</html>
