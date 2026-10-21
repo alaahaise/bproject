@@ -22,8 +22,10 @@ export function useTicketPage(base: {
   status?: OperationStatus | null
   /** Liste de la 2e balance : tickets pesés une fois, en attente de la 2e pesée. */
   awaitingSecond?: boolean
+  /** Vrac pesé dont le BL reste à établir par le commercial. */
+  blPending?: boolean
 }) {
-  const { type, status = null, awaitingSecond = false } = base
+  const { type, status = null, awaitingSecond = false, blPending = false } = base
 
   const [search, setSearch] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -40,6 +42,7 @@ export function useTicketPage(base: {
     type,
     status,
     awaitingSecond,
+    blPending,
     debounced,
     dateFrom,
     dateTo,
@@ -66,6 +69,7 @@ export function useTicketPage(base: {
           type,
           status,
           awaitingSecond,
+          blPending,
           search: debounced || null,
           dateFrom: dateFrom || null,
           dateTo: dateTo || null,
@@ -83,7 +87,7 @@ export function useTicketPage(base: {
     } finally {
       if (mine === latest.current) setLoading(false)
     }
-  }, [type, status, awaitingSecond, debounced, dateFrom, dateTo, page, pageSize, setPage])
+  }, [type, status, awaitingSecond, blPending, debounced, dateFrom, dateTo, page, pageSize, setPage])
 
   useEffect(() => {
     void load()

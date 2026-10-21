@@ -10,6 +10,7 @@ import ManualMark from '../components/ManualMark'
 import Pagination from '../components/Pagination'
 import ProductLines, { cleanLines, hasIncompleteLine } from '../components/ProductLines'
 import RetourToggle from '../components/RetourToggle'
+import VracToggle from '../components/VracToggle'
 import SimulatorPanel from '../components/SimulatorPanel'
 import TicketFilters from '../components/TicketFilters'
 import TicketPreview from '../components/TicketPreview'
@@ -20,6 +21,8 @@ import { useI18n } from '../i18n'
 
 interface CompleteForm {
   isRetour: boolean
+  isVrac: boolean
+  vracProduct: string
   partnerName: string
   blNo: string
   locationFromId: string
@@ -36,6 +39,7 @@ function infoPatch(form: CompleteForm, type: OperationType): OpUpdate {
   const fields = locationFieldsFor(type, form.isRetour)
   const patch: OpUpdate = {
     isRetour: form.isRetour,
+    isVrac: form.isVrac,
     partnerName: form.partnerName || null,
     blNo: form.blNo || null,
     notes: form.notes || null
@@ -51,6 +55,8 @@ function infoPatch(form: CompleteForm, type: OperationType): OpUpdate {
 
 const EMPTY_FORM: CompleteForm = {
   isRetour: false,
+  isVrac: false,
+  vracProduct: '',
   partnerName: '',
   blNo: '',
   locationFromId: '',
@@ -97,12 +103,19 @@ export default function Balance2({ type }: { type: OperationType }) {
     async (weight: number, manual: boolean, source: WeightSample | null): Promise<void> => {
       const current = ticketRef.current
       if (!current) return
-      if (hasIncompleteLine(lines)) {
+      // Vrac : pas de BL, donc pas de quantité à saisir. Le poids net en tient lieu.
+      const vrac = form.isVrac
+      if (vrac) {
+        if (form.vracProduct.trim() === '') {
+          setError(t('vrac.needProduct'))
+          return
+        }
+      } else if (hasIncompleteLine(lines)) {
         setError(t('lines.incomplete'))
         return
       }
-      const clean = cleanLines(lines)
-      if (clean.length === 0) {
+      const clean = vrac ? [] : cleanLines(lines)
+      if (!vrac && clean.length === 0) {
         setError(t('bal2.needLines'))
         return
       }
@@ -119,7 +132,7 @@ export default function Balance2({ type }: { type: OperationType }) {
             isManual: manual,
             stableMs: source?.stableMs ?? null,
             raw: source?.raw ? source.raw.slice(-255) : manual && !source ? 'MANUEL' : null,
-            lines: clean
+            ...(vrac ? { vracProduct: form.vracProduct.trim() } : { lines: clean })
           })
         )
         ticketRef.current = updated
@@ -189,6 +202,8 @@ export default function Balance2({ type }: { type: OperationType }) {
     setSelected(op)
     setForm({
       isRetour: op.isRetour,
+      isVrac: op.isVrac,
+      vracProduct: op.lines[0]?.productCode ?? '',
       partnerName: op.partnerName ?? '',
       blNo: op.blNo ?? '',
       locationFromId: op.locationFromId == null ? '' : String(op.locationFromId),
@@ -323,7 +338,8 @@ export default function Balance2({ type }: { type: OperationType }) {
 
   const complete = selected?.second != null
   const closed = selected != null && selected.status !== 'OUVERTE'
-  const incomplete = hasIncompleteLine(lines)
+  // Le vrac n'a pas de lignes à compléter : seul le nom du produit est exigé.
+  const incomplete = form.isVrac ? form.vracProduct.trim() === '' : hasIncompleteLine(lines)
   const working = busy || blBusy
 
   const rows = list.data?.rows ?? []
@@ -363,6 +379,7 @@ export default function Balance2({ type }: { type: OperationType }) {
                   <td>
                     <strong>{op.ticketNo}</strong>
                     {op.isRetour && <span className="badge warn">{t('station.retour')}</span>}
+                    {op.isVrac && <span className="badge warn">{t('station.vrac')}</span>}
                   </td>
                   <td>{formatDateTime(op.createdAt)}</td>
                   <td>{op.plate || '—'}</td>
@@ -417,6 +434,7 @@ export default function Balance2({ type }: { type: OperationType }) {
                 {closed ? t('ops.final') : t('ops.primary')}
               </span>
               {selected.isRetour && <span className="badge warn">{t('station.retour')}</span>}
+              {selected.isVrac && <span className="badge warn">{t('station.vrac')}</span>}
               <strong>{selected.ticketNo}</strong>
               {!complete && (
                 <div className="head-actions">
@@ -458,47 +476,83 @@ export default function Balance2({ type }: { type: OperationType }) {
 
             {!complete && (
               <div className="form-col">
-                <ProductLines lines={lines} onChange={changeLines} disabled={working} />
-                <div className="pair">
-                  <label>
-                    {t('station.partner')}
-                    <input
-                      value={form.partnerName}
-                      disabled={working}
-                      onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
-                    />
-                  </label>
-                  <label>
-                    {t('station.blNo')}
-                    <div className="bl-lookup">
+                {form.isVrac ? (
+                  <>
+                    <label>
+                      {t('vrac.product')}
                       <input
-                        value={form.blNo}
+                        autoFocus
+                        maxLength={64}
+                        value={form.vracProduct}
                         disabled={working}
-                        onChange={(e) => {
-                          setForm({ ...form, blNo: e.target.value })
-                          setBlNotice(null)
-                        }}
+                        onChange={(e) => setForm({ ...form, vracProduct: e.target.value })}
                       />
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={working || form.blNo.trim() === ''}
-                        onClick={() => void loadBl()}
-                      >
-                        {blBusy ? t('common.loading') : t('bal2.blLoad')}
-                      </button>
-                    </div>
-                  </label>
-                </div>
-                {blNotice && (
-                  <p className={blNotice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">
-                    {blNotice.text}
-                  </p>
+                    </label>
+                    <p className="hint-box">{t('vrac.productHint')}</p>
+                    <label>
+                      {t('station.partner')}
+                      <input
+                        value={form.partnerName}
+                        disabled={working}
+                        onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <>
+                  <ProductLines lines={lines} onChange={changeLines} disabled={working} />
+                  <div className="pair">
+                    <label>
+                      {t('station.partner')}
+                      <input
+                        value={form.partnerName}
+                        disabled={working}
+                        onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
+                      />
+                    </label>
+                    <label>
+                      {t('station.blNo')}
+                      <div className="bl-lookup">
+                        <input
+                          value={form.blNo}
+                          disabled={working}
+                          onChange={(e) => {
+                            setForm({ ...form, blNo: e.target.value })
+                            setBlNotice(null)
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={working || form.blNo.trim() === ''}
+                          onClick={() => void loadBl()}
+                        >
+                          {blBusy ? t('common.loading') : t('bal2.blLoad')}
+                        </button>
+                      </div>
+                    </label>
+                  </div>
+                  {blNotice && (
+                    <p className={blNotice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">
+                      {blNotice.text}
+                    </p>
+                  )}
+                  </>
                 )}
                 <RetourToggle
                   type={type}
                   checked={form.isRetour}
-                  onChange={(value) => setForm({ ...form, isRetour: value })}
+                  onChange={(value) =>
+                    // Un retour a toujours son BL d'origine : jamais du vrac.
+                    setForm({ ...form, isRetour: value, isVrac: value ? false : form.isVrac })
+                  }
+                  disabled={busy}
+                />
+                <VracToggle
+                  type={type}
+                  isRetour={form.isRetour}
+                  checked={form.isVrac}
+                  onChange={(value) => setForm({ ...form, isVrac: value })}
                   disabled={busy}
                 />
                 <LocationPickers
@@ -574,20 +628,26 @@ export default function Balance2({ type }: { type: OperationType }) {
                     <span className="muted">{t('station.net')}</span>
                     <strong className="net">{formatKg(selected.netWeight, lang)}</strong>
                   </div>
-                  <div>
-                    <span className="muted">{t('station.weightSupposed')}</span>
-                    <strong>{formatKg(selected.weightSupposed, lang)}</strong>
-                  </div>
-                  <div>
-                    <span className="muted">{t('station.ecart')}</span>
-                    <strong>{formatKg(selected.ecart, lang)}</strong>
-                    {selected.ecartOk != null && (
-                      <span className={selected.ecartOk ? 'badge ok' : 'badge warn'}>
-                        {selected.ecartOk ? t('station.ecartOk') : t('station.ecartKo')}
-                      </span>
-                    )}
-                  </div>
+                  {!selected.isVrac && (
+                    <>
+                      <div>
+                        <span className="muted">{t('station.weightSupposed')}</span>
+                        <strong>{formatKg(selected.weightSupposed, lang)}</strong>
+                      </div>
+                      <div>
+                        <span className="muted">{t('station.ecart')}</span>
+                        <strong>{formatKg(selected.ecart, lang)}</strong>
+                        {selected.ecartOk != null && (
+                          <span className={selected.ecartOk ? 'badge ok' : 'badge warn'}>
+                            {selected.ecartOk ? t('station.ecartOk') : t('station.ecartKo')}
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
+
+                {selected.isVrac && <p className="hint-box">{t('vrac.handover')}</p>}
 
                 {!closed && (
                   <div className="row">

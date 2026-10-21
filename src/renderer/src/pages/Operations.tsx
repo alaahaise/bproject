@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { Location, OpUpdate } from '@shared/channels'
 import { asksFrom, asksTo, locationFieldsFor } from '@shared/domain/locations'
+import { compareBlToNet, isBlPending } from '@shared/domain/vrac'
 import type { Operation, OperationStatus, OperationType } from '@shared/types'
 import { api, call, errorMessage, formatDateTime, formatKg } from '../api'
 import LocationPickers from '../components/LocationPickers'
 import Pagination from '../components/Pagination'
 import RetourToggle from '../components/RetourToggle'
+import VracToggle from '../components/VracToggle'
 import TicketFilters from '../components/TicketFilters'
 import TicketPreview from '../components/TicketPreview'
 import { useTicketPage } from '../hooks/useTicketPage'
@@ -13,6 +15,7 @@ import { useI18n } from '../i18n'
 
 interface EditDraft {
   isRetour: boolean
+  isVrac: boolean
   plate: string
   driverName: string
   partnerName: string
@@ -26,6 +29,7 @@ interface EditDraft {
 function toDraft(op: Operation): EditDraft {
   return {
     isRetour: op.isRetour,
+    isVrac: op.isVrac,
     plate: op.plate ?? '',
     driverName: op.driverName ?? '',
     partnerName: op.partnerName ?? '',
@@ -55,9 +59,12 @@ export default function Operations({ type }: { type: OperationType }) {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [draft, setDraft] = useState<EditDraft | null>(null)
   const [preview, setPreview] = useState<{ id: number; html: string } | null>(null)
+  const [blPendingOnly, setBlPendingOnly] = useState(false)
+  const [blBusy, setBlBusy] = useState(false)
+  const [blNotice, setBlNotice] = useState<{ kind: 'ok' | 'warn'; text: string } | null>(null)
 
   // Liste paginée côté serveur : seule la page affichée est chargée.
-  const list = useTicketPage({ type, status })
+  const list = useTicketPage({ type, status, blPending: blPendingOnly })
   const reload = list.reload
   const rows = list.data?.rows ?? []
 
@@ -97,6 +104,7 @@ export default function Operations({ type }: { type: OperationType }) {
     try {
       const patch: OpUpdate = {
         isRetour: draft.isRetour,
+        isVrac: draft.isVrac,
         plate: draft.plate || null,
         driverName: draft.driverName || null,
         partnerName: draft.partnerName || null,
@@ -115,11 +123,57 @@ export default function Operations({ type }: { type: OperationType }) {
       await call(api.ops.update(id, patch))
       setEditingId(null)
       setDraft(null)
+      setBlNotice(null)
       await reload()
     } catch (err) {
       setError(errorMessage(err))
     } finally {
       setBusy(false)
+    }
+  }
+
+  /**
+   * Le commercial a établi le BL : on le retrouve dans HFSQL, on reprend sa
+   * référence, sa date et son client, et on compare son poids à la pesée.
+   * Informatif : une différence est signalée, pas bloquée.
+   */
+  async function checkBl(row: Operation): Promise<void> {
+    const number = draft?.blNo.trim()
+    if (!number) return
+    setBlBusy(true)
+    setBlNotice(null)
+    setError(null)
+    try {
+      const lookup = await call(api.bl.lookup(number))
+      setDraft((current) =>
+        current
+          ? {
+              ...current,
+              blNo: lookup.reference,
+              blDate: lookup.date ?? current.blDate,
+              partnerName: current.partnerName || (lookup.clientName ?? '').slice(0, 160)
+            }
+          : current
+      )
+
+      const check = compareBlToNet(lookup.totalWeightKg, row.netWeight)
+      if (check.kind === 'unknown') {
+        setBlNotice({ kind: 'warn', text: t('ops.blCheck.unknown', { reference: lookup.reference }) })
+      } else {
+        setBlNotice({
+          kind: check.kind === 'match' ? 'ok' : 'warn',
+          text: t(check.kind === 'match' ? 'ops.blCheck.match' : 'ops.blCheck.differs', {
+            reference: lookup.reference,
+            bl: formatKg(check.blWeightKg, lang),
+            net: formatKg(check.netKg, lang),
+            diff: formatKg(check.diffKg, lang)
+          })
+        })
+      }
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBlBusy(false)
     }
   }
 
@@ -146,7 +200,7 @@ export default function Operations({ type }: { type: OperationType }) {
     }
   }
 
-  const editField = (key: Exclude<keyof EditDraft, 'isRetour'>) => ({
+  const editField = (key: Exclude<keyof EditDraft, 'isRetour' | 'isVrac'>) => ({
     value: draft?.[key] ?? '',
     onChange: (e: { target: { value: string } }) =>
       setDraft((current) => (current ? { ...current, [key]: e.target.value } : current))
@@ -174,6 +228,16 @@ export default function Operations({ type }: { type: OperationType }) {
           <option value="FERMEE">{t('ops.status.FERMEE')}</option>
           <option value="ANNULEE">{t('ops.status.ANNULEE')}</option>
         </select>
+        {type === 'SORTIE' && (
+          <label className="inline">
+            <input
+              type="checkbox"
+              checked={blPendingOnly}
+              onChange={(e) => setBlPendingOnly(e.target.checked)}
+            />
+            {t('ops.blPendingOnly')}
+          </label>
+        )}
         <button type="button" className="ghost" onClick={() => void reload()}>
           {t('common.refresh')}
         </button>
@@ -216,14 +280,49 @@ export default function Operations({ type }: { type: OperationType }) {
                     </label>
                     <label>
                       {t('station.blNo')}
-                      <input {...editField('blNo')} />
+                      <div className="bl-lookup">
+                        <input
+                          {...editField('blNo')}
+                          onChange={(e) => {
+                            editField('blNo').onChange(e)
+                            setBlNotice(null)
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={blBusy || busy || (draft?.blNo ?? '').trim() === ''}
+                          onClick={() => void checkBl(row)}
+                        >
+                          {blBusy ? t('common.loading') : t('ops.blCheck')}
+                        </button>
+                      </div>
                     </label>
                   </div>
+                  {blNotice && (
+                    <p className={blNotice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">
+                      {blNotice.text}
+                    </p>
+                  )}
                   <RetourToggle
                     type={type}
                     checked={draft?.isRetour ?? false}
                     onChange={(value) =>
-                      setDraft((current) => (current ? { ...current, isRetour: value } : current))
+                      setDraft((current) =>
+                        current
+                          ? { ...current, isRetour: value, isVrac: value ? false : current.isVrac }
+                          : current
+                      )
+                    }
+                  />
+                  <VracToggle
+                    type={type}
+                    isRetour={draft?.isRetour ?? false}
+                    checked={draft?.isVrac ?? false}
+                    // Après la 2e pesée la quantité de la ligne est le net : on ne bascule plus.
+                    disabled={row.second != null}
+                    onChange={(value) =>
+                      setDraft((current) => (current ? { ...current, isVrac: value } : current))
                     }
                   />
                   <LocationPickers
@@ -262,6 +361,7 @@ export default function Operations({ type }: { type: OperationType }) {
                       onClick={() => {
                         setEditingId(null)
                         setDraft(null)
+                        setBlNotice(null)
                       }}
                     >
                       {t('common.cancel')}
@@ -274,6 +374,8 @@ export default function Operations({ type }: { type: OperationType }) {
                 <td>
                   <strong>{row.ticketNo}</strong>
                   {row.isRetour && <span className="badge warn">{t('station.retour')}</span>}
+                  {row.isVrac && <span className="badge warn">{t('station.vrac')}</span>}
+                  {isBlPending(row) && <span className="badge">{t('ops.blPending')}</span>}
                   <br />
                   <small className="muted">{t(`ops.status.${row.status}`)}</small>
                   {row.status !== 'ANNULEE' && (
@@ -339,6 +441,7 @@ export default function Operations({ type }: { type: OperationType }) {
                       onClick={() => {
                         setEditingId(row.id)
                         setDraft(toDraft(row))
+                        setBlNotice(null)
                       }}
                     >
                       {t('ops.edit')}

@@ -21,6 +21,8 @@ Terms used by the operations staff, mapped to model names.
 | brut | `gross_weight` | Loaded weight |
 | tare | `tare_weight` | Empty weight |
 | écart | `ecart` | `net_weight - weight_supposed` (signed) |
+| vrac | `is_vrac` | Goods sold by weight, weighed **before** any BL exists; the commercial issues the BL afterwards |
+| BL à établir | `is_vrac` ∧ `bl_no` empty | A weighed vrac ticket still waiting for its BL |
 | emplacement de dépose | `location_to_id` | stock central, unité A, unité B, ... |
 
 ## 2. The core concept: one ticket, two weighings
@@ -67,6 +69,8 @@ Rules that matter for a company balance:
   weight to compare against and no product to move in stock.
 - Product lines are frozen once the 2nd weighing exists (the écart was computed
   against them); before that they can be replaced freely.
+- **Vrac** tickets (SORTIE sold by weight, no BL yet) take their quantity from the net
+  weight instead of a declared one — see « Vrac » below.
 - A ticket is never deleted. Cancellation sets `status = ANNULEE` with a reason,
   an author, and a timestamp. Company weighing records are evidence.
 - Descriptive fields (plate, partner, BL, notes, locations) can be corrected after
@@ -74,6 +78,49 @@ Rules that matter for a company balance:
   editable**: the `weighings` rows are the proof of what was actually weighed.
 - Every capture is logged individually (`weighings` table) including the raw
   balance response, whether it was manual or automatic, and who did it.
+
+### Special cases (exceptions) and where they stand
+
+| Case | Status | How it is handled |
+|---|---|---|
+| Truck arrives loaded or empty | handled | no imposed order; gross = heavier weighing (`computeTicket`, migration 004) |
+| Truck comes back, 1st weighing must be redone | handled | `redoFirst`; old weighing superseded, never deleted, audited (003) |
+| Balance mute / weight typed by hand | handled | `is_manual`, printed as « M » (003) |
+| Several products on one truck | handled | `operation_lines`; net split pro rata in `v_stock_moves` |
+| Return (customer returns goods / goods sent back to supplier) | handled | `is_retour` (005); locations resolved by `resolveLocations` |
+| Cancellation | handled | `ANNULEE` + reason + author; tickets are never deleted |
+| Descriptive fields wrong after the fact | handled | `update`, audited; weights are not editable |
+| Truck left an old open ticket, comes back | handled | duplicate plate detection on the 1st balance (`bal1.dup`) |
+| Ticket counter behind existing tickets | handled | `allocateTicket` takes the max of counter and existing |
+| BL missing, ambiguous number, no weight in HFSQL, HFSQL unreachable | handled | BL service answers 404 / 409 / `weightComplete=false` / 503; manual entry stays possible |
+| **Vrac sortie: weighed before the BL exists** | **handled (007)** | see ADR 008 |
+| Écart outside tolerance | **partly** | flagged (`ecart_ok = 0`, red badge) but nothing *requires* a supervisor to close it, although the role exists |
+| One BL delivered over several truck rotations | **not handled** | each ticket is independent; no remaining-quantity tracking per BL |
+| Same BL number linked to two tickets | **not handled** | no uniqueness / duplicate warning on `bl_no` |
+| Vrac with two products on one truck | **not handled** | vrac takes exactly one product (the net cannot be split without a BL) |
+| Vrac on an ENTREE (bulk purchase without BL) | **not handled** | `canBeVrac` is SORTIE only, by design until needed |
+| Writing the BL / invoice into HFSQL | **out of scope** | the app reads HFSQL, never writes: the commercial issues BL and invoice in the ERP |
+
+### Vrac (sortie sold by weight)
+
+A normal SORTIE already has its BL: it is read from HFSQL, gives the products and the
+expected weight, and the balance checks it (écart). Vrac is the opposite order:
+
+1. **1re balance** — truck arrives, tick **Vrac**; one weighing, ticket created.
+2. The truck is loaded and comes back.
+3. **2e balance** — type only the **product** (no quantity, no BL). The net weight
+   *becomes* the quantity of the single line, so stock leaves the right weight.
+   `weight_supposed`, `ecart` and `ecart_ok` stay empty: there is nothing to judge.
+4. Print the ticket: it carries « VRAC » and « BL à établir par le commercial ». The
+   net weight is what the commercial invoices.
+5. The commercial issues the BL (unit price, total) and the invoice in the ERP.
+6. **Tickets → Modifier**: enter the BL number and press **Vérifier le BL**. The BL is
+   read from HFSQL; its reference, date and client are filled in and its weight is
+   compared to the weighed net (informative, tolerance 1 kg for the quintal rounding).
+   « BL à établir uniquement » lists the vrac tickets still waiting.
+
+Rules: SORTIE only, never a retour; one product; net must be > 0; the vrac flag cannot be
+changed after the 2nd weighing (cancel the ticket instead).
 
 ## 3. Data model (MySQL)
 

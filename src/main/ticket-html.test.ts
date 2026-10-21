@@ -9,6 +9,7 @@ function ticket(over: Partial<Operation> = {}): Operation {
     type: 'ENTREE',
     status: 'FERMEE',
     isRetour: false,
+    isVrac: false,
     plate: '12345-A-100',
     driverName: null,
     partnerId: null,
@@ -179,5 +180,51 @@ describe('helpers', () => {
     const html = buildTicketHtml(ticket(), opts)
     expect(html).not.toContain('class="m">M')
     expect(html).not.toContain('pesée manuelle')
+  })
+})
+
+describe('ticket vrac', () => {
+  const vrac = (over: Partial<Operation> = {}): Operation =>
+    ticket({
+      type: 'SORTIE',
+      ticketNo: 'S-2026-000010',
+      isVrac: true,
+      locationToId: null,
+      weightSupposed: null,
+      ecart: null,
+      ecartOk: null,
+      lines: [{ productId: null, productCode: 'Maïs vrac', quantityKg: 5000 }],
+      ...over
+    })
+
+  it('porte la mention VRAC et le bandeau « BL à établir » tant que le BL manque', () => {
+    const html = buildTicketHtml(vrac(), opts)
+    expect(html).toContain('TICKET DE SORTIE — VRAC')
+    expect(html).toContain('BL À ÉTABLIR PAR LE COMMERCIAL')
+    expect(html).toContain('Qté pesée')
+    expect(html).toContain('5000.000 kg')
+  })
+
+  it("n'imprime ni poids supposé ni écart (il n'y a rien à juger)", () => {
+    const html = buildTicketHtml(vrac(), opts)
+    expect(html).not.toContain('Poids supposé')
+    expect(html).not.toContain('Écart')
+  })
+
+  it('retire le bandeau une fois le BL renseigné et imprime son numéro', () => {
+    const html = buildTicketHtml(vrac({ blNo: 'BL26-05255' }), opts)
+    expect(html).not.toContain('BL À ÉTABLIR')
+    expect(html).toContain('BL26-05255')
+  })
+
+  it('un ticket ordinaire reste inchangé', () => {
+    const html = buildTicketHtml(ticket(), opts)
+    expect(html).not.toContain('VRAC')
+    expect(html).toContain('Qté supposée')
+  })
+
+  it('imprime le vrac en arabe', () => {
+    const html = buildTicketHtml(vrac(), { ...opts, lang: 'ar' })
+    expect(html).toContain('بالجملة')
   })
 })

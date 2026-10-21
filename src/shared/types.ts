@@ -65,6 +65,11 @@ export interface TicketDraft {
    * fournisseur (SORTIE). Le stock bouge dans le même sens que sans le drapeau.
    */
   isRetour?: boolean
+  /**
+   * Vrac (SORTIE seulement) : marchandise vendue au poids, sans BL au moment de la
+   * pesée. Le poids net devient la quantité ; le commercial établit ensuite le BL.
+   */
+  isVrac?: boolean
   plate?: string | null
   driverName?: string | null
   partnerId?: number | null
@@ -93,6 +98,7 @@ export interface Operation extends TicketDraft {
   ticketNo: string
   status: OperationStatus
   isRetour: boolean
+  isVrac: boolean
   first: Weighing | null
   second: Weighing | null
   /** Somme des lignes, figée à la 2e pesée. */

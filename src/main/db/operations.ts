@@ -20,6 +20,7 @@ import type {
 import { CENTRAL_LOCATION_CODE, resolveLocations } from '@shared/domain/locations'
 import { pageWindow } from '@shared/domain/paging'
 import { containsPattern, searchKey } from '@shared/domain/search'
+import { buildVracLine, canBeVrac } from '@shared/domain/vrac'
 import { computeTicket, counterScope, formatTicketNo } from '@shared/domain/weighing'
 import type {
   Operation,
@@ -31,6 +32,7 @@ import type {
 } from '@shared/types'
 import { getPool } from './pool'
 
+const VRAC_ONLY_SORTIE = 'Le vrac concerne uniquement les sorties (hors retour)'
 const TOLERANCE_KEY = 'ecart_tolerance_kg'
 const DIGITS_KEY = 'ticket_digits'
 
@@ -134,6 +136,8 @@ export async function create(draft: TicketDraft, user: SessionUser): Promise<Ope
     const ticketNo = await allocateTicket(conn, draft.type)
     const vehicleId = await ensureVehicle(conn, draft.plate)
     const isRetour = draft.isRetour === true
+    const isVrac = draft.isVrac === true
+    if (isVrac && !canBeVrac(draft.type, isRetour)) throw new Error(VRAC_ONLY_SORTIE)
     const places = resolveLocations({
       type: draft.type,
       isRetour,
@@ -144,14 +148,15 @@ export async function create(draft: TicketDraft, user: SessionUser): Promise<Ope
 
     const [result] = await conn.query<ResultSetHeader>(
       `INSERT INTO operations
-         (ticket_no, type, is_retour, status, vehicle_id, plate, driver_name,
+         (ticket_no, type, is_retour, is_vrac, status, vehicle_id, plate, driver_name,
           partner_id, partner_name, location_from_id, location_to_id, bl_no, bl_date,
           notes, operator_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         ticketNo,
         draft.type,
         isRetour ? 1 : 0,
+        isVrac ? 1 : 0,
         'OUVERTE',
         vehicleId,
         draft.plate?.trim().toUpperCase() || null,
@@ -208,6 +213,47 @@ async function insertWeighing(
   )
 }
 
+/**
+ * 2e pesée d'un ticket vrac. Il n'y a pas de BL, donc pas de poids supposé :
+ * le net pesé EST la quantité. On l'écrit comme ligne unique (le stock sort ainsi
+ * le bon poids) et on laisse écart et poids supposé vides : rien à juger.
+ */
+async function completeVrac(
+  conn: PoolConnection,
+  input: CaptureInput,
+  row: RowDataPacket,
+  first: Weighing,
+  second: Weighing
+): Promise<void> {
+  const computed = computeTicket({ first, second })
+  if (!computed.ok) throw new Error(`Calcul du ticket impossible (${computed.reason})`)
+
+  const built = buildVracLine(input.vracProduct, computed.netWeight)
+  if (!built.ok) {
+    throw new Error(
+      built.reason === 'NO_PRODUCT'
+        ? 'Indiquez le produit avant la 2e pesée'
+        : 'Le poids net est nul : vérifiez les deux pesées'
+    )
+  }
+
+  await replaceLines(conn, input.operationId, [built.line])
+  await conn.query(
+    `UPDATE operations
+        SET tare_weight = ?, gross_weight = ?, net_weight = ?,
+            ecart = NULL, ecart_ok = NULL, weight_supposed = NULL
+      WHERE id = ?`,
+    [computed.tareWeight, computed.grossWeight, computed.netWeight, input.operationId]
+  )
+
+  if (row.vehicle_id != null) {
+    await conn.query('UPDATE vehicles SET last_tare = ?, last_tare_at = NOW() WHERE id = ?', [
+      computed.tareWeight,
+      row.vehicle_id
+    ])
+  }
+}
+
 export async function capture(
   input: CaptureInput,
   user: SessionUser,
@@ -229,9 +275,13 @@ export async function capture(
     const hasFirst = row.first_weight != null
     if (hasFirst && row.second_weight != null) throw new Error('Les deux pesées sont déjà faites')
 
+    // Vrac : pas de lignes saisies, le produit n'a pas de quantité avant la pesée.
+    // La ligne est écrite plus bas, une fois le net connu.
+    const isVrac = Boolean(Number(row.is_vrac ?? 0))
+
     // Enregistrées dans le même geste que la pesée : le total ci-dessous ne peut
     // pas être calculé sur une liste périmée restée à l'écran.
-    await replaceLines(conn, input.operationId, input.lines)
+    if (!isVrac) await replaceLines(conn, input.operationId, input.lines)
 
     await insertWeighing(conn, input, station, user.id)
 
@@ -252,6 +302,14 @@ export async function capture(
       const second: Weighing = {
         weight: input.weight,
         at: new Date().toISOString()
+      }
+
+      if (isVrac) {
+        await completeVrac(conn, input, row, first, second)
+        await conn.commit()
+        const done = await getById(input.operationId)
+        if (!done) throw new Error('Ticket introuvable après mise à jour')
+        return done
       }
 
       // Le poids supposé est la somme des lignes : sans produit déclaré, l'écart
@@ -373,6 +431,7 @@ export async function close(id: number, user: SessionUser): Promise<Operation> {
  */
 const UPDATABLE_COLUMNS: Record<keyof OpUpdate, string> = {
   isRetour: 'is_retour',
+  isVrac: 'is_vrac',
   plate: 'plate',
   driverName: 'driver_name',
   partnerName: 'partner_name',
@@ -390,7 +449,7 @@ export async function update(id: number, patch: OpUpdate, user: SessionUser): Pr
     if (!(key in patch)) continue
     const value = patch[key as keyof OpUpdate] ?? null
     sets.push(`${column} = ?`) // nom de colonne issu d'une table blanche, jamais du renderer
-    if (key === 'isRetour') params.push(value === true ? 1 : 0)
+    if (key === 'isRetour' || key === 'isVrac') params.push(value === true ? 1 : 0)
     else params.push(key === 'plate' && typeof value === 'string' ? value.toUpperCase() : value)
   }
   if (sets.length === 0) throw new Error('Aucune modification à enregistrer')
@@ -398,6 +457,24 @@ export async function update(id: number, patch: OpUpdate, user: SessionUser): Pr
   const conn = await getPool().getConnection()
   try {
     await conn.beginTransaction()
+
+    // Le vrac décide de ce que vaut la quantité de la ligne : on ne le change plus
+    // une fois la 2e pesée faite (il faudrait annuler le ticket).
+    if ('isVrac' in patch) {
+      const [before] = await conn.query<RowDataPacket[]>(
+        'SELECT is_vrac, second_weight FROM operations WHERE id = ? FOR UPDATE',
+        [id]
+      )
+      const current = before[0]
+      if (
+        current &&
+        Boolean(Number(current.is_vrac)) !== (patch.isVrac === true) &&
+        current.second_weight != null
+      ) {
+        throw new Error('Vrac impossible à modifier après la 2e pesée : annulez le ticket')
+      }
+    }
+
     params.push(id)
     const [result] = await conn.query<ResultSetHeader>(
       `UPDATE operations SET ${sets.join(', ')} WHERE id = ?`,
@@ -409,11 +486,17 @@ export async function update(id: number, patch: OpUpdate, user: SessionUser): Pr
     // envoyer un lieu que ce type ne demande pas) ne doit pas laisser le stock
     // pointer sur un lieu incohérent.
     const [rows] = await conn.query<RowDataPacket[]>(
-      'SELECT type, is_retour, location_from_id, location_to_id FROM operations WHERE id = ?',
+      'SELECT type, is_retour, is_vrac, location_from_id, location_to_id FROM operations WHERE id = ?',
       [id]
     )
     const row = rows[0]
     if (!row) throw new Error('Ticket introuvable')
+    if (
+      Boolean(Number(row.is_vrac)) &&
+      !canBeVrac(row.type as OperationType, Boolean(Number(row.is_retour)))
+    ) {
+      throw new Error(VRAC_ONLY_SORTIE)
+    }
     const places = resolveLocations({
       type: row.type as OperationType,
       isRetour: Boolean(Number(row.is_retour)),
@@ -601,6 +684,13 @@ function buildWhere(filter: OpFilter): { sql: string; params: unknown[] } {
   if (filter.awaitingSecond) {
     where.push('o.first_weight IS NOT NULL AND o.second_weight IS NULL')
   }
+  // Vrac pesé sans BL : même définition que `isBlPending` (shared/domain/vrac).
+  if (filter.blPending) {
+    where.push(
+      `o.is_vrac = 1 AND o.second_weight IS NOT NULL AND o.status <> 'ANNULEE'
+       AND (o.bl_no IS NULL OR o.bl_no = '')`
+    )
+  }
   if (filter.search) {
     // Le texte est cherché tel quel (jokers échappés) ET sous sa forme tolérante
     // pour le numéro de ticket, le matricule et le chauffeur.
@@ -764,6 +854,7 @@ function toOperation(row: RowDataPacket): Operation {
     type,
     status: row.status,
     isRetour: Boolean(Number(row.is_retour ?? 0)),
+    isVrac: Boolean(Number(row.is_vrac ?? 0)),
     plate: row.plate ?? null,
     driverName: row.driver_name ?? null,
     partnerId: num(row.partner_id),

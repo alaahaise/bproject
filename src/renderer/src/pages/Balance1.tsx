@@ -7,6 +7,7 @@ import CaptureBox, { type CaptureRequest } from '../components/CaptureBox'
 import ManualMark from '../components/ManualMark'
 import ProductLines, { cleanLines, hasIncompleteLine } from '../components/ProductLines'
 import RetourToggle from '../components/RetourToggle'
+import VracToggle from '../components/VracToggle'
 import SimulatorPanel from '../components/SimulatorPanel'
 import TicketPreview from '../components/TicketPreview'
 import WeightReadout from '../components/WeightReadout'
@@ -33,6 +34,7 @@ export default function Balance1({ type }: { type: OperationType }) {
   const [driverName, setDriverName] = useState('')
   const [notes, setNotes] = useState('')
   const [isRetour, setIsRetour] = useState(false)
+  const [isVrac, setIsVrac] = useState(false)
   const [lines, setLines] = useState<ProductLine[]>(() => blankLines(type))
   const [ticket, setTicket] = useState<Operation | null>(null)
   // Camion repassé sur la balance : la 1re pesée du ticket existant est à refaire.
@@ -69,6 +71,7 @@ export default function Balance1({ type }: { type: OperationType }) {
             api.ops.create({
               type,
               isRetour,
+              isVrac,
               plate: plate || null,
               driverName: driverName || null,
               notes: notes || null,
@@ -95,7 +98,7 @@ export default function Balance1({ type }: { type: OperationType }) {
         setBusy(false)
       }
     },
-    [type, isRetour, plate, driverName, notes, lines, knowsProduct, redo, stale, t]
+    [type, isRetour, isVrac, plate, driverName, notes, lines, knowsProduct, redo, stale, t]
   )
 
   const balance = useBalance(setError)
@@ -117,6 +120,7 @@ export default function Balance1({ type }: { type: OperationType }) {
     setDriverName('')
     setNotes('')
     setIsRetour(false)
+    setIsVrac(false)
     setLines(blankLines(type))
     setError(null)
   }
@@ -268,7 +272,23 @@ export default function Balance1({ type }: { type: OperationType }) {
               <input value={driverName} onChange={(e) => setDriverName(e.target.value)} />
             </label>
 
-            <RetourToggle type={type} checked={isRetour} onChange={setIsRetour} disabled={busy} />
+            <RetourToggle
+              type={type}
+              checked={isRetour}
+              onChange={(value) => {
+                setIsRetour(value)
+                // Un retour a toujours son BL d'origine : jamais du vrac.
+                if (value) setIsVrac(false)
+              }}
+              disabled={busy}
+            />
+            <VracToggle
+              type={type}
+              isRetour={isRetour}
+              checked={isVrac}
+              onChange={setIsVrac}
+              disabled={busy}
+            />
 
             {knowsProduct ? (
               <ProductLines lines={lines} onChange={setLines} disabled={busy} />
@@ -291,6 +311,7 @@ export default function Balance1({ type }: { type: OperationType }) {
           <div className="ticket-head">
             <span className="badge">{t('ops.primary')}</span>
             {ticket.isRetour && <span className="badge warn">{t('station.retour')}</span>}
+            {ticket.isVrac && <span className="badge warn">{t('station.vrac')}</span>}
             <strong>{ticket.ticketNo}</strong>
           </div>
 

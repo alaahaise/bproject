@@ -657,4 +657,155 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
       expect(outside.total).toBe(0)
     })
   })
+
+  describe('vrac : sortie pesée avant le BL', () => {
+    const weighTwice = async (id: number, first: number, second: number, extra = {}) => {
+      await operations.capture({ operationId: id, weight: first, isManual: false }, user, 'p')
+      return operations.capture(
+        { operationId: id, weight: second, isManual: false, ...extra },
+        user,
+        'p'
+      )
+    }
+
+    it('le poids net devient la quantité : ni poids supposé ni écart', async () => {
+      const ticket = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      expect(ticket.isVrac).toBe(true)
+
+      // Camion pesé à vide, chargé, puis revenu : net = 34 150 - 8 400.
+      const done = await weighTwice(ticket.id, 8400, 34150, { vracProduct: 'Maïs vrac' })
+
+      expect(done.netWeight).toBe(25750)
+      expect(done.lines).toEqual([{ productId: null, productCode: 'Maïs vrac', quantityKg: 25750 }])
+      expect(done.weightSupposed).toBeNull()
+      expect(done.ecart).toBeNull()
+      expect(done.ecartOk).toBeNull()
+    })
+
+    it('fonctionne quand le camion arrive chargé et repasse à vide', async () => {
+      const ticket = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      const done = await weighTwice(ticket.id, 34150, 8400, { vracProduct: 'Son' })
+      expect(done.netWeight).toBe(25750)
+    })
+
+    it('refuse la 2e pesée sans produit, et ne garde aucune trace de la pesée refusée', async () => {
+      const ticket = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await operations.capture({ operationId: ticket.id, weight: 8400, isManual: false }, user, 'p')
+
+      await expect(
+        operations.capture({ operationId: ticket.id, weight: 34150, isManual: false }, user, 'p')
+      ).rejects.toThrow(/produit/i)
+
+      const after = await operations.getById(ticket.id)
+      expect(after?.second).toBeNull()
+      expect(after?.lines).toEqual([])
+    })
+
+    it('refuse un net nul : aucune quantité à facturer', async () => {
+      const ticket = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await operations.capture({ operationId: ticket.id, weight: 8400, isManual: false }, user, 'p')
+
+      await expect(
+        operations.capture(
+          { operationId: ticket.id, weight: 8400, isManual: false, vracProduct: 'Maïs' },
+          user,
+          'p'
+        )
+      ).rejects.toThrow(/net est nul/i)
+    })
+
+    it('ignore des lignes envoyées par erreur sur un ticket vrac', async () => {
+      const ticket = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      const done = await weighTwice(ticket.id, 8400, 10400, {
+        vracProduct: 'Maïs',
+        lines: [{ productCode: 'AUTRE', quantityKg: 99 }]
+      })
+      expect(done.lines).toEqual([{ productId: null, productCode: 'Maïs', quantityKg: 2000 }])
+    })
+
+    it('le vrac fermé fait sortir du stock le poids net', async () => {
+      const ticket = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await weighTwice(ticket.id, 8400, 34150, { vracProduct: 'Maïs vrac' })
+      await operations.close(ticket.id, user)
+
+      const [moves] = await pool
+        .getPool()
+        .query<RowDataPacket[]>(
+          'SELECT product_code, qty_out FROM v_stock_moves WHERE operation_id = ? AND qty_out > 0',
+          [ticket.id]
+        )
+      expect(moves).toHaveLength(1)
+      expect(moves[0]?.product_code).toBe('Maïs vrac')
+      expect(Number(moves[0]?.qty_out)).toBe(25750)
+    })
+
+    it("n'existe que pour une sortie ordinaire", async () => {
+      await expect(operations.create({ type: 'ENTREE', isVrac: true }, user)).rejects.toThrow(
+        /uniquement les sorties/i
+      )
+      await expect(
+        operations.create({ type: 'SORTIE', isVrac: true, isRetour: true }, user)
+      ).rejects.toThrow(/uniquement les sorties/i)
+
+      const vrac = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await expect(operations.update(vrac.id, { isRetour: true }, user)).rejects.toThrow(
+        /uniquement les sorties/i
+      )
+    })
+
+    it('ne bascule plus en vrac (ou hors vrac) une fois la 2e pesée faite', async () => {
+      const ordinary = await operations.create(
+        { type: 'SORTIE', lines: [{ productCode: 'CMV', quantityKg: 1000 }] },
+        user
+      )
+      await weighTwice(ordinary.id, 5000, 6000)
+      await expect(operations.update(ordinary.id, { isVrac: true }, user)).rejects.toThrow(
+        /après la 2e pesée/i
+      )
+
+      const vrac = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await weighTwice(vrac.id, 5000, 6000, { vracProduct: 'Maïs' })
+      await expect(operations.update(vrac.id, { isVrac: false }, user)).rejects.toThrow(
+        /après la 2e pesée/i
+      )
+      // Renvoyer la même valeur (l'écran de correction envoie tous les champs) reste permis.
+      const same = await operations.update(vrac.id, { isVrac: true, notes: 'ok' }, user)
+      expect(same.isVrac).toBe(true)
+    })
+
+    it('liste « BL à établir » : vrac pesé, non annulé, sans BL', async () => {
+      const pending = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await weighTwice(pending.id, 8400, 20400, { vracProduct: 'Orge' })
+
+      const linked = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await weighTwice(linked.id, 8400, 20400, { vracProduct: 'Orge' })
+      await operations.update(linked.id, { blNo: 'BL26-05255', blDate: '2026-10-21' }, user)
+
+      const notWeighedTwice = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await operations.capture(
+        { operationId: notWeighedTwice.id, weight: 8400, isManual: false },
+        user,
+        'p'
+      )
+
+      const cancelled = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await weighTwice(cancelled.id, 8400, 20400, { vracProduct: 'Orge' })
+      await operations.cancel(cancelled.id, 'erreur de saisie', user)
+
+      const ordinary = await operations.create({ type: 'SORTIE' }, user)
+
+      const found = await operations.list({ type: 'SORTIE', blPending: true, limit: 500 })
+      const ids = found.map((op) => op.id)
+      expect(ids).toContain(pending.id)
+      expect(ids).not.toContain(linked.id)
+      expect(ids).not.toContain(notWeighedTwice.id)
+      expect(ids).not.toContain(cancelled.id)
+      expect(ids).not.toContain(ordinary.id)
+
+      // La page serveur applique le même filtre.
+      const page = await operations.page({ type: 'SORTIE', blPending: true, pageSize: 100 })
+      expect(page.rows.map((op) => op.id)).toContain(pending.id)
+      expect(page.rows.every((op) => op.isVrac)).toBe(true)
+    })
+  })
 })

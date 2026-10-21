@@ -107,6 +107,22 @@ const fr = {
   'station.retour': 'Retour',
   'station.retour.ENTREE': 'Retour : marchandise vendue qui revient d’un client',
   'station.retour.SORTIE': 'Retour : marchandise renvoyée (ex. CMV au fournisseur)',
+  'station.vrac': 'Vrac',
+  'station.vrac.hint':
+    'Vendu au poids, sans BL : le poids net est la quantité, le commercial établit le BL après la pesée.',
+  'vrac.product': 'Produit (vrac)',
+  'vrac.productHint': 'Un seul produit. Aucune quantité à saisir : le poids net pesé en tient lieu.',
+  'vrac.needProduct': 'Indiquez le produit avant la 2e pesée.',
+  'vrac.handover':
+    'Remettez ce bon de pesée au commercial : le poids net est la quantité à facturer. Renseignez le n° de BL dans Tickets quand il est établi.',
+  'ops.blPending': 'BL à établir',
+  'ops.blPendingOnly': 'BL à établir uniquement',
+  'ops.blCheck': 'Vérifier le BL',
+  'ops.blCheck.match': 'BL {reference} : {bl} — concorde avec la pesée ({net}).',
+  'ops.blCheck.differs':
+    'BL {reference} : {bl}, pesée : {net} (différence {diff}). À vérifier avec le commercial.',
+  'ops.blCheck.unknown':
+    'BL {reference} trouvé, mais son poids est inconnu : comparaison impossible avec la pesée.',
   'station.firstWeigh': '1re pesée',
   'station.secondWeigh': '2e pesée',
   'station.capture': 'Capturer',
@@ -320,6 +336,21 @@ const ar: Record<TKey, string> = {
   'station.retour': 'مرتجع',
   'station.retour.ENTREE': 'مرتجع: بضاعة مباعة عادت من زبون',
   'station.retour.SORTIE': 'مرتجع: بضاعة أُعيدت (مثل CMV إلى المورد)',
+  'station.vrac': 'بالجملة',
+  'station.vrac.hint':
+    'بيع بالوزن دون وصل: الوزن الصافي هو الكمية، ويُعدّ التجاري وصل التسليم بعد الوزن.',
+  'vrac.product': 'المنتج (بالجملة)',
+  'vrac.productHint': 'منتج واحد. لا حاجة لإدخال كمية: الوزن الصافي يحل محلها.',
+  'vrac.needProduct': 'حدّد المنتج قبل الوزن الثاني.',
+  'vrac.handover':
+    'سلّم تذكرة الوزن هذه للتجاري: الوزن الصافي هو الكمية الواجب فوترتها. سجّل رقم الوصل في التذاكر عند إعداده.',
+  'ops.blPending': 'وصل قيد الإعداد',
+  'ops.blPendingOnly': 'الوصولات قيد الإعداد فقط',
+  'ops.blCheck': 'التحقق من الوصل',
+  'ops.blCheck.match': 'الوصل {reference}: {bl} — مطابق للوزن ({net}).',
+  'ops.blCheck.differs':
+    'الوصل {reference}: {bl}، الوزن: {net} (الفرق {diff}). تحقّق مع التجاري.',
+  'ops.blCheck.unknown': 'تم إيجاد الوصل {reference} لكن وزنه غير معروف: تعذّرت المقارنة مع الوزن.',
   'station.firstWeigh': 'الوزن الأول',
   'station.secondWeigh': 'الوزن الثاني',
   'station.capture': 'تسجيل',

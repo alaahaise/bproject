@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { blApiUrlSchema, blLookupSchema } from './schemas'
+import {
+  blApiUrlSchema,
+  blLookupSchema,
+  captureSchema,
+  opFilterSchema,
+  opUpdateSchema,
+  ticketDraftSchema
+} from './schemas'
 
 describe('blLookupSchema', () => {
   it('accepts the formats typed by the operator', () => {
@@ -33,5 +40,38 @@ describe('blApiUrlSchema', () => {
     expect(blApiUrlSchema.safeParse({ url: 'http://user:pass@bl:3000' }).success).toBe(false)
     expect(blApiUrlSchema.safeParse({ url: 'http://bl:3000?x=1' }).success).toBe(false)
     expect(blApiUrlSchema.safeParse({ url: 'http://bl:3000#x' }).success).toBe(false)
+  })
+})
+
+describe('vrac', () => {
+  it('accepte un ticket vrac et le produit saisi à la 2e pesée, sans quantité', () => {
+    expect(ticketDraftSchema.parse({ type: 'SORTIE', isVrac: true }).isVrac).toBe(true)
+
+    const parsed = captureSchema.parse({
+      operationId: 1,
+      weight: 25750,
+      isManual: false,
+      vracProduct: '  Maïs vrac '
+    })
+    expect(parsed.vracProduct).toBe('Maïs vrac')
+  })
+
+  it('refuse un produit vrac vide ou trop long', () => {
+    const base = { operationId: 1, weight: 1, isManual: false }
+    expect(captureSchema.safeParse({ ...base, vracProduct: '   ' }).success).toBe(false)
+    expect(captureSchema.safeParse({ ...base, vracProduct: 'x'.repeat(65) }).success).toBe(false)
+  })
+
+  it('laisse passer le drapeau en correction et le filtre « BL à établir »', () => {
+    expect(opUpdateSchema.parse({ id: 1, patch: { isVrac: true } }).patch.isVrac).toBe(true)
+    expect(opFilterSchema.parse({ blPending: true }).blPending).toBe(true)
+  })
+
+  it('une ligne ordinaire exige toujours une quantité positive', () => {
+    const result = ticketDraftSchema.safeParse({
+      type: 'SORTIE',
+      lines: [{ productCode: 'CMV', quantityKg: 0 }]
+    })
+    expect(result.success).toBe(false)
   })
 })

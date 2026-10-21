@@ -54,6 +54,9 @@ interface Labels {
   outside: string
   cancelled: string
   retour: string
+  vrac: string
+  vracPending: string
+  quantityVrac: string
   primaryTitle: string
   waitingSecond: string
   manualLegend: string
@@ -87,6 +90,9 @@ const LABELS: Record<Lang, Labels> = {
     outside: 'Extérieur',
     cancelled: 'TICKET ANNULÉ',
     retour: 'RETOUR',
+    vrac: 'VRAC',
+    vracPending: 'BL À ÉTABLIR PAR LE COMMERCIAL',
+    quantityVrac: 'Qté pesée',
     primaryTitle: 'BON DE PESÉE N° 1 — À COMPLÉTER',
     waitingSecond: 'En attente de la 2e pesée',
     manualLegend: 'M = pesée manuelle',
@@ -123,6 +129,9 @@ const LABELS: Record<Lang, Labels> = {
     outside: 'خارجي',
     cancelled: 'تذكرة ملغاة',
     retour: 'مرتجع',
+    vrac: 'بالجملة',
+    vracPending: 'على التجاري إعداد وصل التسليم',
+    quantityVrac: 'الكمية الموزونة',
     primaryTitle: 'تذكرة الوزن رقم 1 — غير مكتملة',
     waitingSecond: 'في انتظار الوزن الثاني',
     manualLegend: 'M = وزن يدوي',
@@ -191,7 +200,11 @@ export function buildTicketHtml(
   // Seuls les lieux que ce type de ticket demande à l'opérateur sont imprimés :
   // une sortie ne mentionne ni origine ni destination, une entrée seulement l'arrivée.
   const fields = locationFieldsFor(op.type, op.isRetour)
-  const title = op.isRetour ? `${t.types[op.type]} — ${t.retour}` : t.types[op.type]
+  const title = op.isRetour
+    ? `${t.types[op.type]} — ${t.retour}`
+    : op.isVrac
+      ? `${t.types[op.type]} — ${t.vrac}`
+      : t.types[op.type]
 
   const cancelled =
     op.status === 'ANNULEE' ? `<h2 class="cancelled">${escapeHtml(t.cancelled)}</h2>` : ''
@@ -205,7 +218,7 @@ export function buildTicketHtml(
     op.lines.length === 0
       ? ''
       : `<div class="lines">
-    <div class="row strong"><span>${escapeHtml(t.product)}</span><span>${escapeHtml(t.quantity)}</span></div>
+    <div class="row strong"><span>${escapeHtml(t.product)}</span><span>${escapeHtml(op.isVrac ? t.quantityVrac : t.quantity)}</span></div>
     ${op.lines
       .map(
         (l) =>
@@ -213,6 +226,13 @@ export function buildTicketHtml(
       )
       .join('')}
   </div>`
+
+  // Vrac pesé, BL pas encore établi : le commercial lit ce bandeau sur le ticket
+  // qu'on lui remet, et le net ci-dessous est la quantité à facturer.
+  const vracNotice =
+    op.isVrac && !isPrimary && !op.blNo?.trim() && op.status !== 'ANNULEE'
+      ? `<div class="waiting">${escapeHtml(t.vracPending)}</div>`
+      : ''
 
   const totals = isPrimary
     ? `<div class="waiting">${escapeHtml(t.waitingSecond)}</div>`
@@ -267,6 +287,7 @@ export function buildTicketHtml(
   ${weighing(op.first, 1)}
   ${weighing(op.second, 2)}
   ${totals}
+  ${vracNotice}
   ${op.first?.isManual || op.second?.isManual ? `<div class="legend">${escapeHtml(t.manualLegend)}</div>` : ''}
   <hr>
   ${row(t.operator, op.operatorName)}

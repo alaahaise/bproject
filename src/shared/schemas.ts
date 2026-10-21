@@ -83,6 +83,7 @@ export const productLineSchema = z.object({
 export const ticketDraftSchema = z.object({
   type: z.enum(OPERATION_TYPES),
   isRetour: z.boolean().optional(),
+  isVrac: z.boolean().optional(),
   plate: z.string().trim().max(32).nullish(),
   driverName: z.string().trim().max(128).nullish(),
   partnerId: z.number().int().positive().nullish(),
@@ -102,7 +103,9 @@ export const captureSchema = z.object({
   stableMs: z.number().int().min(0).nullish(),
   raw: z.string().max(255).nullish(),
   /** Lignes saisies à l'écran : enregistrées dans le même geste que la pesée. */
-  lines: z.array(productLineSchema).max(MAX_LINES).optional()
+  lines: z.array(productLineSchema).max(MAX_LINES).optional(),
+  /** Produit d'un ticket vrac : sans quantité, le poids net en tient lieu. */
+  vracProduct: z.string().trim().min(1).max(64).nullish()
 })
 
 export const opLinesSchema = z.object({
@@ -123,7 +126,8 @@ export const opFilterSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .nullish(),
-  awaitingSecond: z.boolean().optional()
+  awaitingSecond: z.boolean().optional(),
+  blPending: z.boolean().optional()
 })
 
 export const opPageSchema = opFilterSchema.omit({ limit: true }).extend({
@@ -150,6 +154,7 @@ export const opUpdateSchema = z.object({
   id: z.number().int().positive(),
   patch: z.object({
     isRetour: z.boolean().optional(),
+    isVrac: z.boolean().optional(),
     plate: z.string().trim().max(32).nullish(),
     driverName: z.string().trim().max(128).nullish(),
     partnerName: z.string().trim().max(160).nullish(),

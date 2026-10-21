@@ -106,6 +106,8 @@ export interface OpFilter {
   dateTo?: string | null
   /** Tickets pesés une fois, en attente de la 2e pesée (liste de la 2e balance). */
   awaitingSecond?: boolean
+  /** Vrac pesé dont le BL n'est pas encore renseigné : à établir par le commercial. */
+  blPending?: boolean
 }
 
 /** Une page de la liste : le tri est fixe (plus récent d'abord). */
@@ -133,6 +135,11 @@ export interface CaptureInput {
   raw?: string | null
   /** Lignes saisies à l'écran, enregistrées avec la pesée (pas de total périmé). */
   lines?: ProductLine[]
+  /**
+   * Produit d'un ticket VRAC, sans quantité : le poids net en tient lieu.
+   * Ignoré (et `lines` aussi) quand le ticket n'est pas du vrac.
+   */
+  vracProduct?: string | null
 }
 
 export interface LoginInput {
@@ -153,6 +160,7 @@ export interface CancelInput {
  */
 export interface OpUpdate {
   isRetour?: boolean
+  isVrac?: boolean
   plate?: string | null
   driverName?: string | null
   partnerName?: string | null
