@@ -141,6 +141,16 @@ export const loginSchema = z.object({
   password: z.string().min(1).max(200)
 })
 
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(200),
+    newPassword: z.string().min(8).max(200)
+  })
+  .refine((value) => value.currentPassword !== value.newPassword, {
+    path: ['newPassword'],
+    message: 'Choisissez un mot de passe différent de l’ancien'
+  })
+
 export const cancelSchema = z.object({
   id: z.number().int().positive(),
   reason: z.string().trim().min(3).max(255)

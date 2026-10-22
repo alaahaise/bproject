@@ -66,6 +66,7 @@ function Shell({ user, onLogout }: { user: SessionUser; onLogout: () => void }) 
     <div className="shell" data-type={currentMenu?.type}>
       <aside className="sidebar">
         <span className="brand">{t('app.title')}</span>
+        <span className="nav-heading">{t('nav.operationTypes')}</span>
         <nav>
           {MENUS.map((menu) => (
             <div className="menu" key={menu.type}>

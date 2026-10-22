@@ -326,12 +326,15 @@ export default function VracGroups() {
                           <button
                             type="button"
                             className="primary"
-                            disabled={busy || blDraft.blNo.trim() === ''}
+                            disabled={busy || group.status !== 'CLOS' || blDraft.blNo.trim() === ''}
                             onClick={() => void linkBl(group)}
                           >
                             {t('vracGroup.linkBl')}
                           </button>
                         </div>
+                      )}
+                      {group.weighedCount > 0 && group.status !== 'CLOS' && (
+                        <p className="muted">{t('vracGroup.closeBeforeBl')}</p>
                       )}
                     </td>
                   </tr>

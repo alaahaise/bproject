@@ -71,6 +71,51 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
     expect(ticket.lines).toEqual([{ productId: null, productCode: 'CIMENT', quantityKg: 5000 }])
   })
 
+  it('keeps BL off ordinary incoming tickets but accepts a manual BL on a return', async () => {
+    const ordinary = await operations.create(
+      { type: 'ENTREE', blNo: 'BL-IGNORED', blDate: '2026-10-22' },
+      user
+    )
+    expect(ordinary.blNo).toBeNull()
+
+    const returned = await operations.create(
+      { type: 'ENTREE', isRetour: true, blNo: 'BL-SAISIE-MAIN', blDate: '2026-10-22' },
+      user
+    )
+    expect(returned.blNo).toBe('BL-SAISIE-MAIN')
+
+    const corrected = await operations.update(returned.id, { isRetour: false }, user)
+    expect(corrected.blNo).toBeNull()
+  })
+
+  it('changes a password only after verifying the current password', async () => {
+    const [rows] = await pool.getPool().query<RowDataPacket[]>(
+      'SELECT password_hash FROM users WHERE id = ?',
+      [user.id]
+    )
+    const originalHash = String(rows[0]?.password_hash)
+    const currentPassword = 'temporary-current-password'
+    const newPassword = 'temporary-new-password'
+    await pool.getPool().query('UPDATE users SET password_hash = ? WHERE id = ?', [
+      auth.hashPassword(currentPassword),
+      user.id
+    ])
+
+    try {
+      await expect(auth.changePassword(user.id, 'wrong-password', newPassword)).rejects.toThrow(
+        /incorrect/i
+      )
+      await auth.changePassword(user.id, currentPassword, newPassword)
+      expect(await auth.login(user.username, currentPassword)).toBeNull()
+      expect(await auth.login(user.username, newPassword)).not.toBeNull()
+    } finally {
+      await pool.getPool().query('UPDATE users SET password_hash = ? WHERE id = ?', [
+        originalHash,
+        user.id
+      ])
+    }
+  })
+
   it('alloue des numéros distincts et croissants', async () => {
     const first = await operations.create({ type: 'SORTIE' }, user)
     const second = await operations.create({ type: 'SORTIE' }, user)
@@ -130,6 +175,27 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
     const closed = await operations.close(ticket.id, user)
     expect(closed.status).toBe('FERMEE')
     expect(closed.netWeight).toBe(4999.5)
+  })
+
+  it('requires supervisor or admin to close a ticket outside tolerance', async () => {
+    const ticket = await operations.create(
+      { type: 'ENTREE', lines: [{ productCode: 'CIMENT', quantityKg: 5000 }] },
+      user
+    )
+    await operations.capture({ operationId: ticket.id, weight: 12000, isManual: false }, user, 'p')
+    const weighed = await operations.capture(
+      { operationId: ticket.id, weight: 6000, isManual: false },
+      user,
+      'p'
+    )
+    expect(weighed.ecartOk).toBe(false)
+
+    await expect(
+      operations.close(ticket.id, { ...user, role: 'OPERATEUR' })
+    ).rejects.toThrow(/superviseur/i)
+
+    const closed = await operations.close(ticket.id, { ...user, role: 'SUPERVISEUR' })
+    expect(closed.status).toBe('FERMEE')
   })
 
   it('refuse la 2e pesée sans produit : aucun écart à calculer', async () => {
@@ -289,6 +355,25 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
     await expect(
       operations.capture({ operationId: ticket.id, weight: 100, isManual: false }, user, 'p')
     ).rejects.toThrow(/déjà fermé ou annulé/i)
+  })
+
+  it('rolls cancellation back if the audit record cannot be written', async () => {
+    const ticket = await operations.create({ type: 'TIERS' }, user)
+    const conn = await pool.getPool().getConnection()
+    try {
+      await conn.query(
+        `CREATE TRIGGER trg_test_cancel_audit_failure
+         BEFORE INSERT ON audit_log FOR EACH ROW
+         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'test audit failure'`
+      )
+      await expect(operations.cancel(ticket.id, 'Erreur de saisie', user)).rejects.toThrow(
+        /test audit failure/i
+      )
+      expect((await operations.getById(ticket.id))?.status).toBe('OUVERTE')
+    } finally {
+      await conn.query('DROP TRIGGER IF EXISTS trg_test_cancel_audit_failure')
+      conn.release()
+    }
   })
 
   it('filtre et recherche dans la liste', async () => {
@@ -780,6 +865,7 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
 
       const linked = await operations.create({ type: 'SORTIE', isVrac: true }, user)
       await weighTwice(linked.id, 8400, 20400, { vracProduct: 'Orge' })
+      await vracGroups.closeGroup(linked.vracGroupId as number, user)
       await operations.update(linked.id, { blNo: 'BL26-05255', blDate: '2026-10-21' }, user)
 
       const notWeighedTwice = await operations.create({ type: 'SORTIE', isVrac: true }, user)
@@ -940,8 +1026,25 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
       expect(pendingGroups).not.toContain(groupId)
     })
 
+    it('refuses to attach a BL while the VRAC group is still open', async () => {
+      const first = await rotate(null, 8400, 34150)
+      const groupId = first.vracGroupId as number
+
+      await expect(
+        vracGroups.linkBl({ id: groupId, blNo: 'BL26-OPEN' }, user)
+      ).rejects.toThrow(/clôturez l’enlèvement/i)
+      await expect(
+        operations.update(first.id, { blNo: 'BL26-OPEN' }, user)
+      ).rejects.toThrow(/clôturez l’enlèvement/i)
+
+      await vracGroups.closeGroup(groupId, user)
+      const linked = await vracGroups.linkBl({ id: groupId, blNo: 'BL26-CLOSED' }, user)
+      expect(linked.blNo).toBe('BL26-CLOSED')
+    })
+
     it('ne remplace pas un client déjà saisi', async () => {
       const first = await rotate(null, 8400, 20400)
+      await vracGroups.closeGroup(first.vracGroupId as number, user)
       await operations.update(first.id, { partnerName: 'Client saisi à la balance' }, user)
       const linked = await vracGroups.linkBl(
         { id: first.vracGroupId as number, blNo: 'BL26-00001', partnerName: 'Nom du BL' },
@@ -960,6 +1063,7 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
     it("saisir le BL sur un ticket l'étend aux autres rotations de l'enlèvement", async () => {
       const first = await rotate(null, 8400, 20400)
       const second = await rotate(first.vracGroupId as number, 8400, 20400)
+      await vracGroups.closeGroup(first.vracGroupId as number, user)
 
       await operations.update(second.id, { blNo: 'BL26-00003', blDate: '2026-10-22' }, user)
 

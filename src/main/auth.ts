@@ -41,6 +41,26 @@ export async function login(username: string, password: string): Promise<Session
   }
 }
 
+export async function changePassword(
+  userId: number,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const pool = getPool()
+  const [rows] = await pool.query<RowDataPacket[]>(
+    'SELECT password_hash FROM users WHERE id = ? AND active = 1',
+    [userId]
+  )
+  const row = rows[0]
+  if (!row || !verifyPassword(currentPassword, String(row.password_hash))) {
+    throw new Error('Mot de passe actuel incorrect')
+  }
+  await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [
+    hashPassword(newPassword),
+    userId
+  ])
+}
+
 /**
  * Crée le compte administrateur si la table users est vide.
  * Mot de passe : ADMIN_PASSWORD, sinon 'admin' — à changer dès la première

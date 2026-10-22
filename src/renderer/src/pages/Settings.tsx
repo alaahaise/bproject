@@ -4,6 +4,7 @@ import { api, call, errorMessage } from '../api'
 import { useI18n } from '../i18n'
 import BalanceForm from '../components/BalanceForm'
 import DbForm from '../components/DbForm'
+import PasswordForm from '../components/PasswordForm'
 
 /** Nom de la société : c'est lui qui s'imprime en tête du ticket. */
 function CompanyForm() {
@@ -142,6 +143,7 @@ export default function Settings() {
       <DbForm onConnected={() => void api.app.status().then(setStatus)} />
       <BalanceForm />
       <BlApiForm />
+      <PasswordForm />
       {status?.dbConnected && <CompanyForm />}
 
       <section className="card">

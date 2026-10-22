@@ -3,6 +3,7 @@ import {
   blApiUrlSchema,
   blLookupSchema,
   captureSchema,
+  changePasswordSchema,
   opFilterSchema,
   opUpdateSchema,
   ticketDraftSchema,
@@ -17,6 +18,22 @@ describe('blLookupSchema', () => {
 
   it('rejects an empty number', () => {
     expect(blLookupSchema.safeParse({ number: '   ' }).success).toBe(false)
+  })
+})
+
+describe('changePasswordSchema', () => {
+  it('requires a different password with at least eight characters', () => {
+    expect(
+      changePasswordSchema.safeParse({ currentPassword: 'admin', newPassword: 'new-password' })
+        .success
+    ).toBe(true)
+    expect(
+      changePasswordSchema.safeParse({ currentPassword: 'admin', newPassword: 'short' }).success
+    ).toBe(false)
+    expect(
+      changePasswordSchema.safeParse({ currentPassword: 'same-pass', newPassword: 'same-pass' })
+        .success
+    ).toBe(false)
   })
 })
 

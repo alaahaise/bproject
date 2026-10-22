@@ -13,14 +13,23 @@ export function normalizePlate(plate: string | null | undefined): string {
  *
  * Un camion qui n'est jamais revenu à la 2e balance laisse un ticket ouvert. S'il
  * se représente pour une nouvelle 1re pesée, cet ancien ticket n'a plus de sens
- * et doit être annulé. Le rapprochement se fait sur le matricule, tous types de
- * pesée confondus : le camion peut revenir pour autre chose que la première fois.
+ * et doit être annulé. Exception : en démarrant explicitement une rotation vrac,
+ * un ticket vrac en attente peut rester ouvert pendant qu'une nouvelle rotation
+ * du même camion est créée dans son enlèvement.
  */
-export function staleTicketsForPlate(ops: Operation[], plate: string): Operation[] {
+export function staleTicketsForPlate(
+  ops: Operation[],
+  plate: string,
+  startingVracRotation = false
+): Operation[] {
   const wanted = normalizePlate(plate)
   if (wanted === '') return []
   return ops.filter(
-    (op) => op.status === 'OUVERTE' && op.second == null && normalizePlate(op.plate) === wanted
+    (op) =>
+      op.status === 'OUVERTE' &&
+      op.second == null &&
+      !(startingVracRotation && op.isVrac) &&
+      normalizePlate(op.plate) === wanted
   )
 }
 

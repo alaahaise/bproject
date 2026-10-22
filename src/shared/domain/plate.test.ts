@@ -41,6 +41,19 @@ describe('staleTicketsForPlate', () => {
     expect(staleTicketsForPlate(ops, '12345-116-16')).toEqual([])
   })
 
+  it('allows a second pending VRAC rotation for the same plate only in VRAC mode', () => {
+    const previousVrac = op({ id: 8, isVrac: true })
+
+    expect(staleTicketsForPlate([previousVrac], '12345-116-16')).toHaveLength(1)
+    expect(staleTicketsForPlate([previousVrac], '12345-116-16', true)).toEqual([])
+  })
+
+  it('still blocks a pending ordinary ticket when starting a VRAC rotation', () => {
+    const previousOrdinary = op({ id: 9, isVrac: false })
+
+    expect(staleTicketsForPlate([previousOrdinary], '12345-116-16', true)).toHaveLength(1)
+  })
+
   it('ignore un autre camion', () => {
     expect(staleTicketsForPlate([op({ plate: '99999-000-01' })], '12345-116-16')).toEqual([])
   })

@@ -129,6 +129,7 @@ async function start(base: string): Promise<void> {
 
   const url = new URL(base)
   const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+  const host = url.hostname === '[::1]' ? '::1' : url.hostname
   // Le service local n'a pas d'authentification : quand l'adresse par défaut
   // est 127.0.0.1, on le limite à la boucle locale. Un service autonome
   // (`npm start`) reste joignable sur le LAN pour les autres postes.
@@ -136,7 +137,7 @@ async function start(base: string): Promise<void> {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
     PORT: port,
-    ...(url.hostname === '127.0.0.1' ? { HOST: '127.0.0.1' } : {})
+    HOST: host === 'localhost' ? '127.0.0.1' : host
   }
 
   stopping = false

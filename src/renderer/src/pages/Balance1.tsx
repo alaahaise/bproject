@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { normalizePlate, staleTicketsForPlate } from '@shared/domain/plate'
 import { productKnownAtFirstWeighing } from '@shared/domain/weighing'
 import type { Operation, OperationType, ProductLine, WeightSample } from '@shared/types'
@@ -31,6 +32,7 @@ const blankLines = (type: OperationType): ProductLine[] =>
  */
 export default function Balance1({ type }: { type: OperationType }) {
   const { t, lang } = useI18n()
+  const navigate = useNavigate()
   const [plate, setPlate] = useState('')
   const [driverName, setDriverName] = useState('')
   const [notes, setNotes] = useState('')
@@ -143,9 +145,9 @@ export default function Balance1({ type }: { type: OperationType }) {
     }
     let active = true
     const timer = setTimeout(() => {
-      call(api.ops.list({ status: 'OUVERTE', limit: 200 }))
+      call(api.ops.list({ status: 'OUVERTE', awaitingSecond: true, search: plate, limit: 500 }))
         .then((rows) => {
-          if (active) setStale(staleTicketsForPlate(rows, plate))
+          if (active) setStale(staleTicketsForPlate(rows, plate, isVrac))
         })
         .catch(() => undefined)
     }, 350)
@@ -153,7 +155,7 @@ export default function Balance1({ type }: { type: OperationType }) {
       active = false
       clearTimeout(timer)
     }
-  }, [plate, ticket])
+  }, [plate, ticket, isVrac])
 
   async function cancelStale(op: Operation): Promise<void> {
     setBusy(true)
@@ -225,6 +227,7 @@ export default function Balance1({ type }: { type: OperationType }) {
       {!ticket && (
         <div className="card form-card">
           <h2>{t('bal1.title')}</h2>
+          <p className="screen-hint">{t('bal1.hint')}</p>
           <div className="form-col">
             <label>
               {t('station.plate')}
@@ -232,8 +235,9 @@ export default function Balance1({ type }: { type: OperationType }) {
             </label>
 
             {stale.length > 0 && (
-              <div className="stale-box">
-                <strong>{t('bal1.dup.title')}</strong>
+              <div className="stale-box" role="alert">
+                <strong className="stale-title">{t('bal1.dup.title')}</strong>
+                <p>{t('bal1.dup.hint')}</p>
                 {stale.map((op) => (
                   <div className="stale-row" key={op.id}>
                     <span>
@@ -241,33 +245,34 @@ export default function Balance1({ type }: { type: OperationType }) {
                       {formatKg(op.first?.weight, lang)}
                       {op.first ? ` · ${formatDateTime(op.first.at)}` : ''}
                     </span>
+                    <button
+                      type="button"
+                      className="primary resume-ticket"
+                      onClick={() =>
+                        navigate(`${operationPath(op.type)}/balance-2`, {
+                          state: { pendingTicket: op }
+                        })
+                      }
+                    >
+                      {t('bal1.dup.open')}
+                    </button>
                     {confirmCancel === op.id ? (
                       <span className="stale-actions">
                         <strong>{t('bal1.dup.confirm')}</strong>
-                        <button
-                          type="button"
-                          className="danger"
-                          disabled={busy}
-                          onClick={() => void cancelStale(op)}
-                        >
+                        <button type="button" className="danger" disabled={busy} onClick={() => void cancelStale(op)}>
                           {t('common.confirm')}
                         </button>
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => setConfirmCancel(null)}
-                        >
+                        <button type="button" className="ghost" onClick={() => setConfirmCancel(null)}>
                           {t('common.cancel')}
                         </button>
                       </span>
                     ) : (
-                      <button type="button" disabled={busy} onClick={() => setConfirmCancel(op.id)}>
+                      <button type="button" className="ghost" disabled={busy} onClick={() => setConfirmCancel(op.id)}>
                         {t('bal1.dup.cancel')}
                       </button>
                     )}
                   </div>
                 ))}
-                <span className="muted">{t('bal1.dup.hint')}</span>
               </div>
             )}
 
@@ -276,31 +281,40 @@ export default function Balance1({ type }: { type: OperationType }) {
               <input value={driverName} onChange={(e) => setDriverName(e.target.value)} />
             </label>
 
-            <RetourToggle
-              type={type}
-              checked={isRetour}
-              onChange={(value) => {
-                setIsRetour(value)
-                // Un retour a toujours son BL d'origine : jamais du vrac.
-                if (value) setIsVrac(false)
-              }}
-              disabled={busy}
-            />
-            <VracToggle
-              type={type}
-              isRetour={isRetour}
-              checked={isVrac}
-              onChange={setIsVrac}
-              disabled={busy}
-            />
-            {isVrac && (
-              <VracGroupPicker
-                plate={plate}
-                value={vracGroupId}
-                onChange={setVracGroupId}
-                disabled={busy}
-              />
-            )}
+            <details className="optional-fields">
+              <summary>{t('bal1.options')}</summary>
+              <div className="optional-content">
+                <RetourToggle
+                  type={type}
+                  checked={isRetour}
+                  onChange={(value) => {
+                    setIsRetour(value)
+                    // Un retour a toujours son BL d'origine : jamais du vrac.
+                    if (value) setIsVrac(false)
+                  }}
+                  disabled={busy}
+                />
+                <VracToggle
+                  type={type}
+                  isRetour={isRetour}
+                  checked={isVrac}
+                  onChange={setIsVrac}
+                  disabled={busy}
+                />
+                {isVrac && (
+                  <VracGroupPicker
+                    plate={plate}
+                    value={vracGroupId}
+                    onChange={setVracGroupId}
+                    disabled={busy}
+                  />
+                )}
+                <label>
+                  {t('station.notes')}
+                  <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+                </label>
+              </div>
+            </details>
 
             {knowsProduct ? (
               <ProductLines lines={lines} onChange={setLines} disabled={busy} />
@@ -308,10 +322,6 @@ export default function Balance1({ type }: { type: OperationType }) {
               <p className="hint-box">{t('bal1.productLater')}</p>
             )}
 
-            <label>
-              {t('station.notes')}
-              <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
-            </label>
           </div>
 
           {captureBox}
@@ -412,4 +422,17 @@ export default function Balance1({ type }: { type: OperationType }) {
       )}
     </div>
   )
+}
+
+function operationPath(type: OperationType): string {
+  switch (type) {
+    case 'ENTREE':
+      return '/entrees'
+    case 'SORTIE':
+      return '/sorties'
+    case 'TRANSFERT':
+      return '/transferts'
+    case 'TIERS':
+      return '/tiers'
+  }
 }

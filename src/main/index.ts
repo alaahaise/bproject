@@ -45,12 +45,7 @@ if (!app.requestSingleInstanceLock()) {
       try {
         await pool.connect(settings.db)
         const applied = await migrate(settings.db)
-        const bootstrapPassword = await ensureAdmin()
-        if (bootstrapPassword) {
-          console.warn(
-            `[bootstrap] Compte « admin » créé avec le mot de passe « ${bootstrapPassword} » — à changer.`
-          )
-        }
+        await ensureAdmin()
         console.log(
           `[db] connectée à ${settings.db.database}@${settings.db.host}` +
             (applied.length > 0 ? ` — migrations : ${applied.join(', ')}` : '')

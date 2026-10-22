@@ -54,7 +54,8 @@ The two weighings are two screens, and the workflow is deliberately split:
 1. **1re balance** — the truck arrives: plate + driver, one capture. That creates
    the primary ticket and it can be printed immediately.
 2. **2e balance** — the operator **picks** a ticket still waiting for its 2nd
-   weighing from the list, completes the rest (products, partner, BL, locations),
+   weighing from the list, completes the rest (products, partner, locations; a BL
+   only for operation types that use one),
    then captures the 2nd weight. The écart is computed against the product total,
    the operator confirms, and the final ticket prints.
 
@@ -92,11 +93,12 @@ Rules that matter for a company balance:
 | Return (customer returns goods / goods sent back to supplier) | handled | `is_retour` (005); locations resolved by `resolveLocations` |
 | Cancellation | handled | `ANNULEE` + reason + author; tickets are never deleted |
 | Descriptive fields wrong after the fact | handled | `update`, audited; weights are not editable |
-| Truck left an old open ticket, comes back | handled | duplicate plate detection on the 1st balance (`bal1.dup`) |
+| Truck left an old open ticket, comes back | handled | duplicate plate detection on the 1st balance (`bal1.dup`); an explicitly selected VRAC rotation can coexist with another pending VRAC ticket for the same plate, in the same open enlèvement |
 | Ticket counter behind existing tickets | handled | `allocateTicket` takes the max of counter and existing |
 | BL missing, ambiguous number, no weight in HFSQL, HFSQL unreachable | handled | BL service answers 404 / 409 / `weightComplete=false` / 503; manual entry stays possible |
 | **Vrac sortie: weighed before the BL exists** | **handled (007)** | see ADR 008 |
-| Écart outside tolerance | **partly** | flagged (`ecart_ok = 0`, red badge) but nothing *requires* a supervisor to close it, although the role exists |
+| Ordinary incoming ticket has no BL; returns may have a manually entered BL | **handled** | the BL stays optional and is only shown for an incoming return |
+| Écart outside tolerance | **handled** | flagged (`ecart_ok = 0`); an `OPERATEUR` cannot close it, while a supervisor or admin can |
 | One BL delivered over several truck rotations (vrac) | **handled (008)** | rotations are grouped in an *enlèvement*; total = sum of nets; one BL for the total |
 | One BL delivered over several rotations, *not* vrac (BL known in advance) | **not handled** | each ticket is checked on its own; no remaining-quantity tracking per BL |
 | Same BL number linked to two tickets | **not handled** | no uniqueness / duplicate warning on `bl_no` |

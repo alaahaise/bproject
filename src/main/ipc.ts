@@ -12,6 +12,7 @@ import {
   balanceConfigSchema,
   blApiUrlSchema,
   blLookupSchema,
+  changePasswordSchema,
   cancelSchema,
   captureSchema,
   companySchema,
@@ -39,6 +40,7 @@ import * as pool from './db/pool'
 import { printHtml } from './printer'
 import { balance, listPorts } from './serial/service'
 import { loadSettings, saveSettings } from './settings'
+import { toSettingsView } from './settings-view'
 import { buildTicketHtml } from './ticket-html'
 import * as vracGroups from './db/vrac-groups'
 import { buildVracGroupHtml } from './vrac-html'
@@ -80,11 +82,18 @@ async function tryConnect(create: boolean): Promise<Result> {
 
 export function registerIpc(): void {
   // ---- Configuration du poste ----
-  ipcMain.handle(CH.settingsGet, () => loadSettings())
+  ipcMain.handle(CH.settingsGet, () => toSettingsView(loadSettings()))
 
   ipcMain.handle(CH.settingsSaveDb, async (_e, raw): Promise<Result> => {
     const cfg = parse(dbConfigSchema, raw)
-    saveSettings({ ...loadSettings(), db: cfg })
+    const current = loadSettings()
+    const saved = {
+      ...cfg,
+      // The renderer deliberately receives no stored password. Blank means
+      // keep the existing credential; a new value replaces it.
+      password: cfg.password || current.db?.password || ''
+    }
+    saveSettings({ ...current, db: saved })
     const result = await tryConnect(true)
     if (result.ok) broadcast(CH.appStatus, await appStatus())
     return result
@@ -138,18 +147,13 @@ export function registerIpc(): void {
     if (!pool.isConnected()) return { ok: false, message: 'Connectez-vous à la base avant de migrer' }
     try {
       const applied = await migrate(settings.db)
-      const bootstrap = await auth.ensureAdmin()
-      if (bootstrap) {
-        console.warn(
-          `[bootstrap] Compte « admin » créé avec le mot de passe « ${bootstrap} » — à changer.`
-        )
-      }
+      await auth.ensureAdmin()
       return {
         ok: true,
         message:
           applied.length > 0
             ? `Tables créées : ${applied.join(', ')}`
-            : 'Base déjà à jour. Compte par défaut : admin / admin'
+            : 'Base déjà à jour.'
       }
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : String(err) }
@@ -166,6 +170,12 @@ export function registerIpc(): void {
     if (!user) throw new Error('Identifiant ou mot de passe incorrect')
     session = user
     return user
+  })
+
+  ipcMain.handle(CH.authChangePassword, async (_e, raw): Promise<void> => {
+    const user = requireUser()
+    const { currentPassword, newPassword } = parse(changePasswordSchema, raw)
+    await auth.changePassword(user.id, currentPassword, newPassword)
   })
 
   ipcMain.handle(CH.authLogout, () => {

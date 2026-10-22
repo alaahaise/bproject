@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 export interface BlApiConfig {
   port: number
-  /** Vide = toutes les interfaces. */
+  /** Boucle locale par défaut ; une adresse partagée doit être explicite. */
   host: string
   /** Chaîne ODBC, ex. `DSN=commercial`. Peut contenir un mot de passe. */
   connectionString: string
@@ -43,7 +43,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BlApiConfig {
 
   return {
     port,
-    host: env.HOST?.trim() ?? '',
+    host: env.HOST?.trim() || '127.0.0.1',
     connectionString,
     blType: integer(env, 'BL_TYPE', 23),
     articleCacheTtlMs: integer(env, 'ARTICLE_CACHE_TTL_MS', 60_000),

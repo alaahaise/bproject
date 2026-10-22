@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import type { Location, OpUpdate } from '@shared/channels'
 import { asksFrom, asksTo, locationFieldsFor } from '@shared/domain/locations'
 import { isManualKind } from '@shared/domain/weighing'
+import { allowsBl } from '@shared/domain/operation-fields'
 import type { VracGroup, Operation, OperationType, ProductLine, WeightSample } from '@shared/types'
 import { api, call, errorMessage, formatDateTime, formatKg } from '../api'
 import CaptureBox, { type CaptureRequest } from '../components/CaptureBox'
@@ -41,7 +43,7 @@ function infoPatch(form: CompleteForm, type: OperationType): OpUpdate {
     isRetour: form.isRetour,
     isVrac: form.isVrac,
     partnerName: form.partnerName || null,
-    blNo: form.blNo || null,
+    blNo: allowsBl(type, form.isRetour) ? form.blNo || null : null,
     notes: form.notes || null
   }
   if (asksFrom(fields)) {
@@ -74,6 +76,8 @@ const EMPTY_FORM: CompleteForm = {
  */
 export default function Balance2({ type }: { type: OperationType }) {
   const { t, lang } = useI18n()
+  const location = useLocation()
+  const pendingTicket = (location.state as { pendingTicket?: Operation } | null)?.pendingTicket
   const [selected, setSelected] = useState<Operation | null>(null)
   // Enlèvement du ticket vrac pesé : son total court avec chaque rotation.
   const [vracGroup, setVracGroup] = useState<VracGroup | null>(null)
@@ -213,8 +217,8 @@ export default function Balance2({ type }: { type: OperationType }) {
     setBlNotice(null)
   }, [type])
 
-  function choose(op: Operation): void {
-    stopRedo()
+  const choose = useCallback((op: Operation): void => {
+    setRedo(false)
     ticketRef.current = op
     setSelected(op)
     setForm({
@@ -234,7 +238,18 @@ export default function Balance2({ type }: { type: OperationType }) {
     setConfirmSave(false)
     setError(null)
     setBlNotice(null)
-  }
+  }, [])
+
+  // Un clic depuis l’alerte de la 1re balance ouvre directement le ticket concerné.
+  useEffect(() => {
+    if (
+      pendingTicket?.type === type &&
+      pendingTicket.status === 'OUVERTE' &&
+      pendingTicket.second == null
+    ) {
+      choose(pendingTicket)
+    }
+  }, [choose, location.key, pendingTicket, type])
 
   /**
    * Importe un BL : client, numéro de BL et lignes de produit. Le poids de
@@ -368,6 +383,7 @@ export default function Balance2({ type }: { type: OperationType }) {
       {!selected && (
         <div className="card form-card">
           <h2>{t('bal2.pending')}</h2>
+          <p className="screen-hint">{t('bal2.pendingHint')}</p>
           <TicketFilters
             autoFocus
             search={list.search}
@@ -406,7 +422,7 @@ export default function Balance2({ type }: { type: OperationType }) {
                     {op.first?.isManual && <ManualMark />}
                   </td>
                   <td>
-                    <button type="button" className="primary" onClick={() => choose(op)}>
+                    <button type="button" className="primary ticket-open" onClick={() => choose(op)}>
                       {t('bal2.choose')}
                     </button>
                   </td>
@@ -527,27 +543,29 @@ export default function Balance2({ type }: { type: OperationType }) {
                         onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
                       />
                     </label>
-                    <label>
-                      {t('station.blNo')}
-                      <div className="bl-lookup">
-                        <input
-                          value={form.blNo}
-                          disabled={working}
-                          onChange={(e) => {
-                            setForm({ ...form, blNo: e.target.value })
-                            setBlNotice(null)
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="ghost"
-                          disabled={working || form.blNo.trim() === ''}
-                          onClick={() => void loadBl()}
-                        >
-                          {blBusy ? t('common.loading') : t('bal2.blLoad')}
-                        </button>
-                      </div>
-                    </label>
+                    {allowsBl(type, form.isRetour) && (
+                      <label>
+                        {t('station.blNo')}
+                        <div className="bl-lookup">
+                          <input
+                            value={form.blNo}
+                            disabled={working}
+                            onChange={(e) => {
+                              setForm({ ...form, blNo: e.target.value })
+                              setBlNotice(null)
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="ghost"
+                            disabled={working || form.blNo.trim() === ''}
+                            onClick={() => void loadBl()}
+                          >
+                            {blBusy ? t('common.loading') : t('bal2.blLoad')}
+                          </button>
+                        </div>
+                      </label>
+                    )}
                   </div>
                   {blNotice && (
                     <p className={blNotice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">
@@ -560,7 +578,7 @@ export default function Balance2({ type }: { type: OperationType }) {
                   type={type}
                   checked={form.isRetour}
                   onChange={(value) =>
-                    // Un retour a toujours son BL d'origine : jamais du vrac.
+                    // Un retour n'est jamais du vrac ; son BL reste facultatif.
                     setForm({ ...form, isRetour: value, isVrac: value ? false : form.isVrac })
                   }
                   disabled={busy}

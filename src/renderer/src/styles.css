@@ -2,16 +2,16 @@
    plusieurs mètres, le reste est secondaire. Le sens RTL vient de html[dir]. */
 
 :root {
-  --bg: #0f172a;
-  --panel: #1e293b;
-  --panel-2: #273449;
-  --line: #334155;
-  --text: #e2e8f0;
-  --muted: #94a3b8;
-  --accent: #22c55e;
-  --accent-2: #38bdf8;
-  --danger: #ef4444;
-  --warn: #f59e0b;
+  --bg: #eef2f6;
+  --panel: #ffffff;
+  --panel-2: #f1f5f9;
+  --line: #cbd5e1;
+  --text: #172033;
+  --muted: #475569;
+  --accent: #15803d;
+  --accent-2: #0369a1;
+  --danger: #b91c1c;
+  --warn: #a16207;
 }
 
 * {
@@ -142,7 +142,16 @@ p {
 
 .brand {
   font-weight: 700;
-  color: var(--accent-2);
+  color: #075985;
+  font-size: 18px;
+}
+
+.nav-heading {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .spacer {
@@ -378,7 +387,7 @@ button.chip.active {
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 16px;
-  background: linear-gradient(180deg, var(--panel), #16202f);
+  background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 6px 22px;
@@ -416,7 +425,7 @@ button.chip.active {
 }
 
 .raw {
-  background: #0b1220;
+  background: #f8fafc;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 10px;
@@ -869,7 +878,7 @@ button.big {
 
 /* Sans cela, l'icône du calendrier est noire sur fond sombre. */
 input[type='date'] {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 .pagination {
@@ -902,10 +911,20 @@ input[type='date'] {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 14px;
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid var(--danger);
+  padding: 16px;
+  color: #7f1d1d;
+  background: #fef2f2;
+  border: 2px solid var(--danger);
   border-radius: 10px;
+}
+
+.stale-box p {
+  margin: 0;
+  font-weight: 600;
+}
+
+.stale-title {
+  font-size: 18px;
 }
 
 .stale-row {
@@ -914,6 +933,8 @@ input[type='date'] {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid #fecaca;
 }
 
 .stale-actions {
@@ -933,6 +954,40 @@ input[type='date'] {
 .summary p {
   margin: 2px 0;
   font-size: 18px;
+}
+
+.screen-hint {
+  margin: -4px 0 16px;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+.optional-fields {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.optional-fields summary {
+  padding: 12px 14px;
+  color: var(--accent-2);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.optional-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.resume-ticket {
+  min-height: 48px;
+}
+
+.ticket-open {
+  min-height: 44px;
 }
 
 .hint-box {

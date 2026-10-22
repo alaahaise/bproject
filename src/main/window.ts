@@ -7,7 +7,7 @@
  * sécurité de contenu injectée à la construction.
  */
 import { join } from 'node:path'
-import { BrowserWindow, shell } from 'electron'
+import { BrowserWindow } from 'electron'
 
 export function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -31,10 +31,7 @@ export function createWindow(): BrowserWindow {
 
   // Aucune navigation hors de l'application : un lien externe s'ouvre dans le
   // navigateur du système, jamais dans une fenêtre qui a accès au pont IPC.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (event, url) => {
     if (url !== win.webContents.getURL()) event.preventDefault()
   })

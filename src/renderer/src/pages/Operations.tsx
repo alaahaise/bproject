@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Location, OpUpdate } from '@shared/channels'
 import { asksFrom, asksTo, locationFieldsFor } from '@shared/domain/locations'
+import { allowsBl } from '@shared/domain/operation-fields'
 import { compareBlToNet, isBlPending } from '@shared/domain/vrac'
 import type { Operation, OperationStatus, OperationType } from '@shared/types'
 import { api, call, errorMessage, formatDateTime, formatKg } from '../api'
@@ -108,7 +109,7 @@ export default function Operations({ type }: { type: OperationType }) {
         plate: draft.plate || null,
         driverName: draft.driverName || null,
         partnerName: draft.partnerName || null,
-        blNo: draft.blNo || null,
+        blNo: allowsBl(type, draft.isRetour) ? draft.blNo || null : null,
         blDate: draft.blDate || null,
         notes: draft.notes || null
       }
@@ -281,26 +282,28 @@ export default function Operations({ type }: { type: OperationType }) {
                       {t('station.partner')}
                       <input {...editField('partnerName')} />
                     </label>
-                    <label>
-                      {t('station.blNo')}
-                      <div className="bl-lookup">
-                        <input
-                          {...editField('blNo')}
-                          onChange={(e) => {
-                            editField('blNo').onChange(e)
-                            setBlNotice(null)
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="ghost"
-                          disabled={blBusy || busy || (draft?.blNo ?? '').trim() === ''}
-                          onClick={() => void checkBl(row)}
-                        >
-                          {blBusy ? t('common.loading') : t('ops.blCheck')}
-                        </button>
-                      </div>
-                    </label>
+                    {allowsBl(type, draft?.isRetour ?? false) && (
+                      <label>
+                        {t('station.blNo')}
+                        <div className="bl-lookup">
+                          <input
+                            {...editField('blNo')}
+                            onChange={(e) => {
+                              editField('blNo').onChange(e)
+                              setBlNotice(null)
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="ghost"
+                            disabled={blBusy || busy || (draft?.blNo ?? '').trim() === ''}
+                            onClick={() => void checkBl(row)}
+                          >
+                            {blBusy ? t('common.loading') : t('ops.blCheck')}
+                          </button>
+                        </div>
+                      </label>
+                    )}
                   </div>
                   {blNotice && (
                     <p className={blNotice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">

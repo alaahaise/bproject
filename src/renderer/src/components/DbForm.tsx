@@ -15,6 +15,7 @@ const EMPTY: DbConfig = {
 export default function DbForm({ onConnected }: { onConnected?: () => void }) {
   const { t } = useI18n()
   const [cfg, setCfg] = useState<DbConfig>(EMPTY)
+  const [hasSavedPassword, setHasSavedPassword] = useState(false)
   const [busy, setBusy] = useState(false)
   const [ok, setOk] = useState<boolean | null>(null)
   const [message, setMessage] = useState<string | null>(null)
@@ -23,7 +24,11 @@ export default function DbForm({ onConnected }: { onConnected?: () => void }) {
     api.settings
       .get()
       .then((s) => {
-        if (s.db) setCfg(s.db)
+        if (s.db) {
+          const { hasPassword, ...db } = s.db
+          setCfg({ ...db, password: '' })
+          setHasSavedPassword(hasPassword)
+        }
       })
       .catch(() => undefined)
   }, [])
@@ -36,7 +41,11 @@ export default function DbForm({ onConnected }: { onConnected?: () => void }) {
       const result = await call(api.settings.saveDb(cfg))
       setOk(result.ok)
       setMessage(result.message)
-      if (result.ok) onConnected?.()
+      if (result.ok) {
+        setHasSavedPassword(hasSavedPassword || cfg.password !== '')
+        setCfg((previous) => ({ ...previous, password: '' }))
+        onConnected?.()
+      }
     } catch (err) {
       setOk(false)
       setMessage(errorMessage(err))
@@ -85,6 +94,7 @@ export default function DbForm({ onConnected }: { onConnected?: () => void }) {
           <input
             type="password"
             value={cfg.password}
+            placeholder={hasSavedPassword ? t('db.passwordSaved') : ''}
             onChange={(e) => setCfg({ ...cfg, password: e.target.value })}
           />
         </label>

@@ -37,6 +37,8 @@ const api: AppApi = {
   },
   auth: {
     login: (username, password) => invoke(CH.authLogin, { username, password }),
+    changePassword: (currentPassword, newPassword) =>
+      invoke(CH.authChangePassword, { currentPassword, newPassword }),
     logout: () => invoke(CH.authLogout),
     current: () => invoke(CH.authCurrent)
   },

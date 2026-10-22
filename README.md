@@ -46,8 +46,9 @@ npm run bl:start           # compile puis lance out/main/bl-api.js
 
 L'adresse du service se règle dans **Paramètres → API des bons de livraison**
 (`BL_API_URL` en repli). Le service lancé par l'application écoute sur la boucle
-locale ; un service partagé se lance séparément. Il n'a pas d'authentification :
-le garder derrière le réseau interne / VPN.
+locale ; un service partagé se lance séparément avec `HOST=0.0.0.0` explicitement
+configuré. Il n'a pas d'authentification : limiter son accès au réseau interne /
+VPN et filtrer le port par pare-feu.
 
 ## Service BL — API
 

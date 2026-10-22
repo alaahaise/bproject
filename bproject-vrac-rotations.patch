@@ -1,0 +1,2478 @@
+From 470dca2dd6bbe6c97b8359be27c450e54235b2e5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 22 Oct 2026 09:00:20 +0000
+Subject: [PATCH] =?UTF-8?q?Vrac=20en=20plusieurs=20rotations=20:=20enl?=
+ =?UTF-8?q?=C3=A8vements,=20total=20somm=C3=A9,=20un=20seul=20BL?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Un client prend son vrac en plusieurs rotations (ex. 4) : chacune est un ticket
+avec son net ; le commercial établit UN BL sur la somme.
+
+- migration 008 : vrac_groups + operations.vrac_group_id (reprise des tickets
+  vrac de la 007 : sans BL = ouvert, avec BL = clos)
+- enlèvement OUVERT/CLOS ; tout ticket vrac appartient à un enlèvement ; le total
+  est calculé (somme des nets non annulés), jamais stocké
+- 1re balance : choix de l'enlèvement (le camion déjà présent est proposé d'office)
+- clôture refusée tant qu'une rotation attend sa 2e pesée ; réouverture tant
+  qu'aucun BL n'est lié
+- récapitulatif imprimable FR/AR : chaque rotation + total net à facturer
+- BL vérifié dans HFSQL contre le TOTAL, rattaché à toutes les rotations d'un coup
+  (saisi sur un ticket, il se propage aux autres)
+- page « Enlèvements vrac » (menu Sorties) ; 2e balance affiche le total courant
+- docs : domain-model (cas particuliers), ADR 008 réécrit
+- tests : +14 d'intégration (MariaDB), +11 unitaires domaine, +7 récapitulatif,
+  +3 schémas
+---
+ docs/adr/008-vrac.md                          |  67 ++--
+ docs/domain-model.md                          |  48 ++-
+ migrations/008_vrac_groups.sql                |  42 ++
+ src/main/db/migrate.ts                        |   4 +-
+ src/main/db/operations.integration.test.ts    | 218 +++++++++++
+ src/main/db/operations.ts                     |  34 +-
+ src/main/db/search-sql.ts                     |   3 +
+ src/main/db/vrac-groups.ts                    | 286 ++++++++++++++
+ src/main/ipc.ts                               |  49 ++-
+ src/main/ticket-html.test.ts                  |   1 +
+ src/main/vrac-html.test.ts                    |  92 +++++
+ src/main/vrac-html.ts                         | 154 ++++++++
+ src/preload/index.ts                          |   9 +
+ src/renderer/src/App.tsx                      |   5 +
+ .../src/components/VracGroupPicker.tsx        |  79 ++++
+ src/renderer/src/i18n.tsx                     |  79 +++-
+ src/renderer/src/pages/Balance1.tsx           |  14 +-
+ src/renderer/src/pages/Balance2.tsx           |  37 +-
+ src/renderer/src/pages/Operations.tsx         |   5 +-
+ src/renderer/src/pages/VracGroups.tsx         | 362 ++++++++++++++++++
+ src/shared/channels.ts                        |  39 +-
+ src/shared/domain/vrac.test.ts                | 121 +++++-
+ src/shared/domain/vrac.ts                     |  69 +++-
+ src/shared/schemas.test.ts                    |  29 +-
+ src/shared/schemas.ts                         |  19 +
+ src/shared/types.ts                           |  55 +++
+ 26 files changed, 1857 insertions(+), 63 deletions(-)
+ create mode 100644 migrations/008_vrac_groups.sql
+ create mode 100644 src/main/db/search-sql.ts
+ create mode 100644 src/main/db/vrac-groups.ts
+ create mode 100644 src/main/vrac-html.test.ts
+ create mode 100644 src/main/vrac-html.ts
+ create mode 100644 src/renderer/src/components/VracGroupPicker.tsx
+ create mode 100644 src/renderer/src/pages/VracGroups.tsx
+
+diff --git a/docs/adr/008-vrac.md b/docs/adr/008-vrac.md
+index 65a6267..c53b0f3 100644
+--- a/docs/adr/008-vrac.md
++++ b/docs/adr/008-vrac.md
+@@ -1,4 +1,4 @@
+-# ADR 008 — Sortie en vrac : peser d'abord, le BL vient après
++# ADR 008 — Sortie en vrac : peser d'abord, plusieurs rotations, un seul BL
+ 
+ ## Contexte
+ 
+@@ -6,43 +6,62 @@ Une sortie ordinaire suit l'ordre « BL → pesée » : le commercial a déjà 
+ l'application le lit dans HFSQL (ADR 007), en tire produits et poids attendu, et la
+ balance vérifie l'écart.
+ 
+-Pour le vrac c'est l'inverse. Le client arrive, est pesé, repart chargé puis revient
+-(double pesée). Aucun BL n'existe : le poids net **est** la quantité vendue. Le commercial
+-s'en sert pour établir le BL (prix unitaire, total) puis la facture. Avant cet ADR,
+-l'application exigeait des produits avec une quantité avant la 2e pesée et jugeait un
+-écart contre eux : impossible à satisfaire pour du vrac.
++Pour le vrac c'est l'inverse, et en plus un client prend rarement tout en une fois :
++il fait **plusieurs rotations** (par exemple 4). À chaque rotation le camion est pesé à
++l'arrivée, part charger, puis est repesé : le net de **cette rotation** est connu tout de
++suite. Aucun BL n'existe. Le commercial établit **un seul BL** sur la **somme** des nets
++(prix unitaire, total), puis la facture.
++
++Avant cet ADR, l'application exigeait des produits avec une quantité avant la 2e pesée et
++jugeait un écart contre eux, et ne savait pas additionner plusieurs tickets.
+ 
+ ## Décision
+ 
+-Un drapeau `operations.is_vrac` (migration 007), réservé aux SORTIE qui ne sont pas des
+-retours (`canBeVrac`).
+-
+-- **Pesée** : à la 2e balance on saisit le produit seul. Le net devient la quantité de
+-  l'unique ligne (`buildVracLine`) ; `weight_supposed`, `ecart` et `ecart_ok` restent
+-  vides. Le stock (`v_stock_moves`) n'a pas à changer : la ligne porte le bon poids.
+-- **BL à établir** : état dérivé, sans colonne ni statut de plus : vrac pesé, non annulé,
+-  `bl_no` vide (`isBlPending`, filtre SQL `blPending`, même définition aux deux endroits).
+-- **Rapprochement** : quand le commercial a établi le BL, l'opérateur saisit son numéro
+-  dans Tickets et le vérifie contre HFSQL. Référence, date et client sont repris ; le poids
+-  du BL est comparé au net pesé (`compareBlToNet`, tolérance 1 kg pour l'arrondi au
+-  quintal). C'est informatif : une différence est signalée, jamais bloquante.
+-- **Ticket imprimé** : mention VRAC, quantité « pesée », bandeau « BL à établir par le
+-  commercial » tant que le numéro manque.
++**Une rotation = un ticket** (`operations.is_vrac`, migration 007), réservé aux SORTIE
++hors retour (`canBeVrac`). **Un enlèvement = les rotations d'un client** (`vrac_groups`,
++migration 008), rattachées par `operations.vrac_group_id`.
++
++- **Pesée d'une rotation** : à la 2e balance on saisit le produit seul. Le net devient la
++  quantité de la ligne unique (`buildVracLine`) ; `weight_supposed`, `ecart` et
++  `ecart_ok` restent vides. Le stock (`v_stock_moves`) n'a pas à changer : chaque ligne
++  porte le bon poids.
++- **Enlèvement** : OUVERT (accepte de nouvelles rotations) puis CLOS (« le client a
++  fini »). Tout ticket vrac appartient à un enlèvement, même seul : un seul chemin de code.
++  À la 1re balance l'opérateur choisit « nouvel enlèvement » ou un enlèvement ouvert ; le
++  camion déjà présent dans un seul enlèvement ouvert est proposé d'office.
++- **Total** : toujours calculé (`summarizeVracGroup`) = somme des nets des rotations
++  pesées et non annulées. Jamais stocké, donc jamais périmé.
++- **Clôture** (`closeBlocker`) : refusée tant qu'une rotation attend sa 2e pesée (son net
++  manquerait au total remis au commercial) ou sans aucune rotation pesée. Réouvrable tant
++  qu'aucun BL n'est lié (un BL établi sur le total serait faux avec une rotation de plus).
++- **Récapitulatif imprimable** (`vrac-html.ts`) : chaque rotation et le **total à
++  facturer**, remis au commercial. Provisoire tant que l'enlèvement est ouvert ; bandeau
++  « BL à établir » une fois clos et sans BL.
++- **Rapprochement** : le BL du commercial est vérifié dans HFSQL puis rattaché à **toutes**
++  les rotations d'un coup (`linkBl`) ; saisi sur un ticket, il se propage aux autres. Son
++  poids est comparé au **total** de l'enlèvement (`compareBlToNet`, tolérance 1 kg pour
++  l'arrondi au quintal) : informatif, jamais bloquant.
+ 
+ L'application reste **en lecture seule sur HFSQL** : elle n'écrit ni BL ni facture.
+ 
+ ## Pourquoi pas autrement
+ 
++- *Un seul ticket pour toutes les rotations* : le camion ne peut avoir qu'une paire
++  1re/2e pesée par ticket, et la traçabilité (plaque, heure, poids) se perd.
+ - *Un type de ticket VRAC* : le stock, la numérotation, l'impression et les écrans
+   dépendent du type ; un drapeau comme `is_retour` évite de tout dupliquer.
++- *Stocker le total sur l'enlèvement* : il serait faux dès qu'une rotation est annulée ou
++  corrigée ; la somme se calcule à la demande sur quelques lignes.
+ - *Écrire le BL dans HFSQL depuis la balance* : lie l'application au schéma d'écriture de
+   l'ERP et contourne la saisie du prix par le commercial.
+-- *Plusieurs produits en vrac* : sans BL, rien ne dit combien de chacun ; refusé.
++- *Plusieurs produits par rotation* : sans BL, rien ne dit combien de chacun ; refusé.
++  (Plusieurs produits au total sont possibles : une rotation par produit.)
+ 
+ ## Conséquences
+ 
+ - Vrac non modifiable après la 2e pesée (la quantité de la ligne est le net) : annuler le
+   ticket pour recommencer.
+-- Pas encore traités : un même BL lié à deux tickets, un BL livré en plusieurs rotations,
+-  et l'obligation d'un superviseur quand l'écart d'une sortie ordinaire dépasse la
+-  tolérance. Voir le tableau des cas particuliers dans `docs/domain-model.md`.
++- Pas encore traités : un même BL lié à deux enlèvements, un BL connu d'avance livré en
++  plusieurs rotations (hors vrac), et l'obligation d'un superviseur quand l'écart d'une
++  sortie ordinaire dépasse la tolérance. Voir le tableau des cas particuliers dans
++  `docs/domain-model.md`.
+diff --git a/docs/domain-model.md b/docs/domain-model.md
+index 7c6a10b..30900a0 100644
+--- a/docs/domain-model.md
++++ b/docs/domain-model.md
+@@ -22,6 +22,8 @@ Terms used by the operations staff, mapped to model names.
+ | tare | `tare_weight` | Empty weight |
+ | écart | `ecart` | `net_weight - weight_supposed` (signed) |
+ | vrac | `is_vrac` | Goods sold by weight, weighed **before** any BL exists; the commercial issues the BL afterwards |
++| enlèvement (vrac group) | `vrac_groups` | All the rotations (tickets) one customer takes; summed into a single total for a single BL |
++| rotation | one vrac ticket | One round trip on the balance: 1st weighing, loading, 2nd weighing → its own net |
+ | BL à établir | `is_vrac` ∧ `bl_no` empty | A weighed vrac ticket still waiting for its BL |
+ | emplacement de dépose | `location_to_id` | stock central, unité A, unité B, ... |
+ 
+@@ -95,32 +97,40 @@ Rules that matter for a company balance:
+ | BL missing, ambiguous number, no weight in HFSQL, HFSQL unreachable | handled | BL service answers 404 / 409 / `weightComplete=false` / 503; manual entry stays possible |
+ | **Vrac sortie: weighed before the BL exists** | **handled (007)** | see ADR 008 |
+ | Écart outside tolerance | **partly** | flagged (`ecart_ok = 0`, red badge) but nothing *requires* a supervisor to close it, although the role exists |
+-| One BL delivered over several truck rotations | **not handled** | each ticket is independent; no remaining-quantity tracking per BL |
++| One BL delivered over several truck rotations (vrac) | **handled (008)** | rotations are grouped in an *enlèvement*; total = sum of nets; one BL for the total |
++| One BL delivered over several rotations, *not* vrac (BL known in advance) | **not handled** | each ticket is checked on its own; no remaining-quantity tracking per BL |
+ | Same BL number linked to two tickets | **not handled** | no uniqueness / duplicate warning on `bl_no` |
+ | Vrac with two products on one truck | **not handled** | vrac takes exactly one product (the net cannot be split without a BL) |
+ | Vrac on an ENTREE (bulk purchase without BL) | **not handled** | `canBeVrac` is SORTIE only, by design until needed |
+ | Writing the BL / invoice into HFSQL | **out of scope** | the app reads HFSQL, never writes: the commercial issues BL and invoice in the ERP |
+ 
+-### Vrac (sortie sold by weight)
++### Vrac (sortie sold by weight, several rotations)
+ 
+ A normal SORTIE already has its BL: it is read from HFSQL, gives the products and the
+-expected weight, and the balance checks it (écart). Vrac is the opposite order:
+-
+-1. **1re balance** — truck arrives, tick **Vrac**; one weighing, ticket created.
+-2. The truck is loaded and comes back.
+-3. **2e balance** — type only the **product** (no quantity, no BL). The net weight
+-   *becomes* the quantity of the single line, so stock leaves the right weight.
+-   `weight_supposed`, `ecart` and `ecart_ok` stay empty: there is nothing to judge.
+-4. Print the ticket: it carries « VRAC » and « BL à établir par le commercial ». The
+-   net weight is what the commercial invoices.
+-5. The commercial issues the BL (unit price, total) and the invoice in the ERP.
+-6. **Tickets → Modifier**: enter the BL number and press **Vérifier le BL**. The BL is
+-   read from HFSQL; its reference, date and client are filled in and its weight is
+-   compared to the weighed net (informative, tolerance 1 kg for the quintal rounding).
+-   « BL à établir uniquement » lists the vrac tickets still waiting.
+-
+-Rules: SORTIE only, never a retour; one product; net must be > 0; the vrac flag cannot be
+-changed after the 2nd weighing (cancel the ticket instead).
++expected weight, and the balance checks it (écart). Vrac is the opposite order, and a
++customer usually takes it in **several rotations** (e.g. 4):
++
++1. **1re balance** — truck arrives, tick **Vrac**. Pick **Nouvel enlèvement** for the
++   customer's first rotation, or the open enlèvement for the next ones (it is proposed
++   automatically when the same plate already has a rotation in exactly one open enlèvement).
++2. The truck loads and comes back.
++3. **2e balance** — type only the **product**. The net weight of *this rotation* becomes
++   its quantity (stock leaves the right weight); no `weight_supposed`, no écart. The
++   screen shows the enlèvement's running total.
++4. The customer comes back for the next rotation: repeat from 1 (same enlèvement).
++5. When the customer is done: **Enlèvements vrac → Clôturer**. It refuses while a
++   rotation still waits for its 2nd weighing (cancel it or finish it). The **récapitulatif**
++   opens: every rotation + the **total net to invoice**. Print it for the commercial.
++6. The commercial issues **one BL** on the total (unit price, total) and the invoice in the
++   ERP — the app never writes to HFSQL.
++7. **Enlèvements vrac → Détails**: type the BL number, **Vérifier le BL** (reads HFSQL,
++   compares the BL weight with the total, informative, tolerance 1 kg), then **Lier le BL**:
++   it is recorded on **all** rotations. Typing the BL on one ticket in *Tickets* does the same.
++
++Rules: SORTIE only, never a retour; one product per rotation; each rotation's net must be
++> 0; a rotation joins only an OUVERT enlèvement; a CLOS one can be reopened until a BL is
++linked; the vrac flag cannot change after the 2nd weighing (cancel the ticket); a cancelled
++rotation is excluded from the total. The total is always computed (sum of nets), never stored.
+ 
+ ## 3. Data model (MySQL)
+ 
+diff --git a/migrations/008_vrac_groups.sql b/migrations/008_vrac_groups.sql
+new file mode 100644
+index 0000000..c4c9bc7
+--- /dev/null
++++ b/migrations/008_vrac_groups.sql
+@@ -0,0 +1,42 @@
++-- 008 — Enlèvement vrac : plusieurs rotations, un seul BL.
++--
++-- Un client qui prend du vrac fait souvent plusieurs rotations : à chaque passage
++-- il est pesé à l'arrivée et au retour du chargement. Chaque rotation est un
++-- ticket (son net est connu tout de suite) ; le commercial n'établit qu'UN BL,
++-- sur la somme des nets. Un « enlèvement » regroupe donc les tickets d'un même
++-- client :
++--
++--   OUVERT : on peut encore y ajouter une rotation ;
++--   CLOS   : l'opérateur a dit « c'est fini » ; le total est remis au commercial.
++--
++-- Le total n'est jamais stocké : c'est la somme des nets des rotations non
++-- annulées. Un ticket vrac appartient toujours à un enlèvement (même s'il n'a
++-- qu'une rotation), ce qui évite deux chemins de code.
++
++CREATE TABLE vrac_groups (
++  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
++  status      ENUM('OUVERT','CLOS') NOT NULL DEFAULT 'OUVERT',
++  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  closed_at   DATETIME NULL,
++  closed_by   INT UNSIGNED NULL,
++  PRIMARY KEY (id),
++  KEY ix_vg_status (status, created_at),
++  CONSTRAINT fk_vg_closed_by FOREIGN KEY (closed_by) REFERENCES users (id)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
++
++ALTER TABLE operations
++  ADD COLUMN vrac_group_id BIGINT UNSIGNED NULL AFTER is_vrac,
++  ADD KEY ix_ops_vrac_group (vrac_group_id),
++  ADD CONSTRAINT fk_ops_vrac_group FOREIGN KEY (vrac_group_id) REFERENCES vrac_groups (id);
++
++-- Reprise de la 007 : chaque ticket vrac existant devient son propre enlèvement
++-- (l'id du groupe reprend celui du ticket). Déjà un BL = enlèvement clos.
++INSERT INTO vrac_groups (id, status, created_at, closed_at)
++SELECT o.id,
++       IF(o.bl_no IS NULL OR o.bl_no = '', 'OUVERT', 'CLOS'),
++       o.created_at,
++       IF(o.bl_no IS NULL OR o.bl_no = '', NULL, o.created_at)
++  FROM operations o
++ WHERE o.is_vrac = 1;
++
++UPDATE operations SET vrac_group_id = id WHERE is_vrac = 1;
+diff --git a/src/main/db/migrate.ts b/src/main/db/migrate.ts
+index e590c58..f7075c8 100644
+--- a/src/main/db/migrate.ts
++++ b/src/main/db/migrate.ts
+@@ -13,6 +13,7 @@ import freeOrder004 from '../../../migrations/004_free_weighing_order.sql?raw'
+ import retour005 from '../../../migrations/005_retour.sql?raw'
+ import listIndexes006 from '../../../migrations/006_ticket_list_indexes.sql?raw'
+ import vrac007 from '../../../migrations/007_vrac.sql?raw'
++import vracGroups008 from '../../../migrations/008_vrac_groups.sql?raw'
+ 
+ const MIGRATIONS: ReadonlyArray<{ version: string; sql: string }> = [
+   { version: '001_init', sql: init001 },
+@@ -21,7 +22,8 @@ const MIGRATIONS: ReadonlyArray<{ version: string; sql: string }> = [
+   { version: '004_free_weighing_order', sql: freeOrder004 },
+   { version: '005_retour', sql: retour005 },
+   { version: '006_ticket_list_indexes', sql: listIndexes006 },
+-  { version: '007_vrac', sql: vrac007 }
++  { version: '007_vrac', sql: vrac007 },
++  { version: '008_vrac_groups', sql: vracGroups008 }
+ ]
+ 
+ export async function migrate(cfg: DbConfig): Promise<string[]> {
+diff --git a/src/main/db/operations.integration.test.ts b/src/main/db/operations.integration.test.ts
+index 4e7c569..fcdd114 100644
+--- a/src/main/db/operations.integration.test.ts
++++ b/src/main/db/operations.integration.test.ts
+@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+ import type { SessionUser } from '@shared/types'
+ import * as auth from '../auth'
+ import * as operations from './operations'
++import * as vracGroups from './vrac-groups'
+ import * as pool from './pool'
+ import { migrate } from './migrate'
+ 
+@@ -808,4 +809,221 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
+       expect(page.rows.every((op) => op.isVrac)).toBe(true)
+     })
+   })
++
++  describe('enlèvement vrac : plusieurs rotations, un seul BL', () => {
++    /** Une rotation complète : création (dans l'enlèvement), 1re puis 2e pesée. */
++    const rotate = async (
++      groupId: number | null,
++      first: number,
++      second: number,
++      product = 'Maïs vrac',
++      plate = '12345-116-16'
++    ) => {
++      const ticket = await operations.create(
++        { type: 'SORTIE', isVrac: true, vracGroupId: groupId, plate },
++        user
++      )
++      await operations.capture({ operationId: ticket.id, weight: first, isManual: false }, user, 'p')
++      return operations.capture(
++        { operationId: ticket.id, weight: second, isManual: false, vracProduct: product },
++        user,
++        'p'
++      )
++    }
++
++    it('somme 4 rotations en un seul total, dans un seul enlèvement', async () => {
++      const first = await rotate(null, 8400, 34150)
++      const groupId = first.vracGroupId as number
++      expect(groupId).toBeGreaterThan(0)
++
++      await rotate(groupId, 8400, 34500)
++      await rotate(groupId, 8450, 34350)
++      const last = await rotate(groupId, 8400, 34650)
++      expect(last.vracGroupId).toBe(groupId)
++
++      const group = await vracGroups.getGroup(groupId)
++      expect(group?.rotations).toHaveLength(4)
++      expect(group?.weighedCount).toBe(4)
++      expect(group?.awaitingCount).toBe(0)
++      // 25 750 + 26 100 + 25 900 + 26 250
++      expect(group?.totalNetKg).toBe(104000)
++      expect(group?.products).toEqual([{ productCode: 'Maïs vrac', quantityKg: 104000 }])
++      expect(group?.reference).toBe(first.ticketNo)
++      expect(group?.status).toBe('OUVERT')
++    })
++
++    it('chaque ticket vrac a son enlèvement, même seul', async () => {
++      const a = await rotate(null, 8400, 20400)
++      const b = await rotate(null, 8400, 20400)
++      expect(a.vracGroupId).not.toBeNull()
++      expect(a.vracGroupId).not.toBe(b.vracGroupId)
++    })
++
++    it('refuse de rejoindre un enlèvement inconnu ou clos', async () => {
++      await expect(
++        operations.create({ type: 'SORTIE', isVrac: true, vracGroupId: 999999 }, user)
++      ).rejects.toThrow(/introuvable/i)
++
++      const first = await rotate(null, 8400, 20400)
++      const groupId = first.vracGroupId as number
++      await vracGroups.closeGroup(groupId, user)
++      await expect(
++        operations.create({ type: 'SORTIE', isVrac: true, vracGroupId: groupId }, user)
++      ).rejects.toThrow(/clôturé/i)
++    })
++
++    it('ne clôture pas tant qu\'un camion attend sa 2e pesée', async () => {
++      const first = await rotate(null, 8400, 20400)
++      const groupId = first.vracGroupId as number
++
++      const pending = await operations.create(
++        { type: 'SORTIE', isVrac: true, vracGroupId: groupId },
++        user
++      )
++      await operations.capture({ operationId: pending.id, weight: 8400, isManual: false }, user, 'p')
++
++      await expect(vracGroups.closeGroup(groupId, user)).rejects.toThrow(/2e pesée/i)
++
++      // Une fois la rotation annulée, la clôture devient possible et le total reste juste.
++      await operations.cancel(pending.id, 'camion reparti vide', user)
++      const closed = await vracGroups.closeGroup(groupId, user)
++      expect(closed.status).toBe('CLOS')
++      expect(closed.totalNetKg).toBe(12000)
++      expect(closed.closedAt).not.toBeNull()
++    })
++
++    it('ne clôture pas un enlèvement sans rotation pesée, ni deux fois', async () => {
++      const empty = await operations.create({ type: 'SORTIE', isVrac: true }, user)
++      await expect(vracGroups.closeGroup(empty.vracGroupId as number, user)).rejects.toThrow(
++        /rien à clôturer/i
++      )
++
++      const done = await rotate(null, 8400, 20400)
++      await vracGroups.closeGroup(done.vracGroupId as number, user)
++      await expect(vracGroups.closeGroup(done.vracGroupId as number, user)).rejects.toThrow(
++        /déjà clôturé/i
++      )
++    })
++
++    it('une rotation annulée ne compte pas dans le total', async () => {
++      const first = await rotate(null, 8400, 20400)
++      const groupId = first.vracGroupId as number
++      const second = await rotate(groupId, 8400, 30400)
++      await operations.cancel(second.id, 'erreur de pesée', user)
++
++      expect((await vracGroups.getGroup(groupId))?.totalNetKg).toBe(12000)
++    })
++
++    it('le BL du commercial est rattaché à toutes les rotations', async () => {
++      const first = await rotate(null, 8400, 34150)
++      const groupId = first.vracGroupId as number
++      const second = await rotate(groupId, 8400, 34500)
++      await vracGroups.closeGroup(groupId, user)
++
++      const linked = await vracGroups.linkBl(
++        { id: groupId, blNo: 'BL26-05255', blDate: '2026-10-22', partnerName: 'HANGAR AIN NOUISSY' },
++        user
++      )
++
++      expect(linked.blNo).toBe('BL26-05255')
++      expect(linked.partnerName).toBe('HANGAR AIN NOUISSY')
++      for (const rotation of linked.rotations) {
++        expect(rotation.blNo).toBe('BL26-05255')
++        expect(rotation.blDate).toBe('2026-10-22')
++      }
++      expect((await operations.getById(second.id))?.blNo).toBe('BL26-05255')
++
++      // Plus rien à établir : ni dans la liste des tickets, ni dans celle des enlèvements.
++      const pendingTickets = (await operations.list({ type: 'SORTIE', blPending: true, limit: 500 })).map((o) => o.id)
++      expect(pendingTickets).not.toContain(first.id)
++      const pendingGroups = (await vracGroups.listGroups({ blPending: true })).map((g) => g.id)
++      expect(pendingGroups).not.toContain(groupId)
++    })
++
++    it('ne remplace pas un client déjà saisi', async () => {
++      const first = await rotate(null, 8400, 20400)
++      await operations.update(first.id, { partnerName: 'Client saisi à la balance' }, user)
++      const linked = await vracGroups.linkBl(
++        { id: first.vracGroupId as number, blNo: 'BL26-00001', partnerName: 'Nom du BL' },
++        user
++      )
++      expect(linked.partnerName).toBe('Client saisi à la balance')
++    })
++
++    it('refuse un BL sur un enlèvement sans rotation pesée', async () => {
++      const empty = await operations.create({ type: 'SORTIE', isVrac: true }, user)
++      await expect(
++        vracGroups.linkBl({ id: empty.vracGroupId as number, blNo: 'BL26-00002' }, user)
++      ).rejects.toThrow(/Aucune rotation pesée/i)
++    })
++
++    it("saisir le BL sur un ticket l'étend aux autres rotations de l'enlèvement", async () => {
++      const first = await rotate(null, 8400, 20400)
++      const second = await rotate(first.vracGroupId as number, 8400, 20400)
++
++      await operations.update(second.id, { blNo: 'BL26-00003', blDate: '2026-10-22' }, user)
++
++      expect((await operations.getById(first.id))?.blNo).toBe('BL26-00003')
++      expect((await operations.getById(first.id))?.blDate).toBe('2026-10-22')
++    })
++
++    it('rouvre un enlèvement clos par erreur, sauf si un BL est déjà renseigné', async () => {
++      const first = await rotate(null, 8400, 20400)
++      const groupId = first.vracGroupId as number
++      await vracGroups.closeGroup(groupId, user)
++
++      const reopened = await vracGroups.reopenGroup(groupId, user)
++      expect(reopened.status).toBe('OUVERT')
++      expect(reopened.closedAt).toBeNull()
++      // Il accepte de nouveau une rotation.
++      const more = await rotate(groupId, 8400, 20400)
++      expect(more.vracGroupId).toBe(groupId)
++
++      await vracGroups.closeGroup(groupId, user)
++      await vracGroups.linkBl({ id: groupId, blNo: 'BL26-00004' }, user)
++      await expect(vracGroups.reopenGroup(groupId, user)).rejects.toThrow(/BL est déjà renseigné/i)
++    })
++
++    it('un ticket basculé en vrac reçoit un enlèvement ; sorti du vrac, il le quitte', async () => {
++      const ticket = await operations.create({ type: 'SORTIE' }, user)
++      expect(ticket.vracGroupId).toBeNull()
++
++      const asVrac = await operations.update(ticket.id, { isVrac: true }, user)
++      const groupId = asVrac.vracGroupId as number
++      expect(groupId).toBeGreaterThan(0)
++
++      const back = await operations.update(ticket.id, { isVrac: false }, user)
++      expect(back.vracGroupId).toBeNull()
++      // L'enlèvement resté vide disparaît.
++      expect(await vracGroups.getGroup(groupId)).toBeNull()
++    })
++
++    it('liste les enlèvements par statut et par recherche', async () => {
++      const open = await rotate(null, 8400, 20400, 'Maïs', 'ZZ-OPEN-1')
++      const closed = await rotate(null, 8400, 20400, 'Maïs', 'ZZ-CLOSED-1')
++      await vracGroups.closeGroup(closed.vracGroupId as number, user)
++
++      const opened = (await vracGroups.listGroups({ status: 'OUVERT' })).map((g) => g.id)
++      expect(opened).toContain(open.vracGroupId)
++      expect(opened).not.toContain(closed.vracGroupId)
++
++      const found = await vracGroups.listGroups({ search: 'ZZ-CLOSED' })
++      expect(found.map((g) => g.id)).toEqual([closed.vracGroupId])
++    })
++
++    it('le stock sort la somme des rotations enregistrées', async () => {
++      const first = await rotate(null, 8400, 34150, 'Maïs stock')
++      const second = await rotate(first.vracGroupId as number, 8400, 34500, 'Maïs stock')
++      await operations.close(first.id, user)
++      await operations.close(second.id, user)
++
++      const [moves] = await pool
++        .getPool()
++        .query<RowDataPacket[]>(
++          'SELECT SUM(qty_out) AS total FROM v_stock_moves WHERE operation_id IN (?, ?) AND qty_out > 0',
++          [first.id, second.id]
++        )
++      expect(Number(moves[0]?.total)).toBe(51850)
++    })
++  })
+ })
+diff --git a/src/main/db/operations.ts b/src/main/db/operations.ts
+index 87421aa..aee62eb 100644
+--- a/src/main/db/operations.ts
++++ b/src/main/db/operations.ts
+@@ -31,6 +31,8 @@ import type {
+   Weighing
+ } from '@shared/types'
+ import { getPool } from './pool'
++import { stripped } from './search-sql'
++import { assignGroup, dropGroupIfEmpty, shareBlInGroup } from './vrac-groups'
+ 
+ const VRAC_ONLY_SORTIE = 'Le vrac concerne uniquement les sorties (hors retour)'
+ const TOLERANCE_KEY = 'ecart_tolerance_kg'
+@@ -146,17 +148,22 @@ export async function create(draft: TicketDraft, user: SessionUser): Promise<Ope
+       centralId: await centralLocationId(conn)
+     })
+ 
++    // Chaque rotation vrac appartient à un enlèvement : celui qu'on lui désigne
++    // (la 2e, 3e… rotation du même client) ou un nouveau.
++    const vracGroupId = isVrac ? await assignGroup(conn, draft.vracGroupId) : null
++
+     const [result] = await conn.query<ResultSetHeader>(
+       `INSERT INTO operations
+-         (ticket_no, type, is_retour, is_vrac, status, vehicle_id, plate, driver_name,
++         (ticket_no, type, is_retour, is_vrac, vrac_group_id, status, vehicle_id, plate, driver_name,
+           partner_id, partner_name, location_from_id, location_to_id, bl_no, bl_date,
+           notes, operator_id)
+-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
++       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       [
+         ticketNo,
+         draft.type,
+         isRetour ? 1 : 0,
+         isVrac ? 1 : 0,
++        vracGroupId,
+         'OUVERTE',
+         vehicleId,
+         draft.plate?.trim().toUpperCase() || null,
+@@ -486,7 +493,8 @@ export async function update(id: number, patch: OpUpdate, user: SessionUser): Pr
+     // envoyer un lieu que ce type ne demande pas) ne doit pas laisser le stock
+     // pointer sur un lieu incohérent.
+     const [rows] = await conn.query<RowDataPacket[]>(
+-      'SELECT type, is_retour, is_vrac, location_from_id, location_to_id FROM operations WHERE id = ?',
++      `SELECT type, is_retour, is_vrac, vrac_group_id, bl_no, bl_date, location_from_id, location_to_id
++         FROM operations WHERE id = ?`,
+       [id]
+     )
+     const row = rows[0]
+@@ -509,6 +517,21 @@ export async function update(id: number, patch: OpUpdate, user: SessionUser): Pr
+       [places.fromId, places.toId, id]
+     )
+ 
++    // Un ticket vrac appartient toujours à un enlèvement ; un ticket qui cesse
++    // d'être vrac le quitte (et l'enlèvement disparaît s'il reste vide).
++    const isVrac = Boolean(Number(row.is_vrac))
++    const currentGroup = row.vrac_group_id == null ? null : Number(row.vrac_group_id)
++    if (isVrac && currentGroup === null) {
++      const groupId = await assignGroup(conn, null)
++      await conn.query('UPDATE operations SET vrac_group_id = ? WHERE id = ?', [groupId, id])
++    } else if (!isVrac && currentGroup !== null) {
++      await conn.query('UPDATE operations SET vrac_group_id = NULL WHERE id = ?', [id])
++      await dropGroupIfEmpty(conn, currentGroup)
++    } else if (isVrac && currentGroup !== null && ('blNo' in patch || 'blDate' in patch)) {
++      // Un seul BL pour tout l'enlèvement : on l'étend aux autres rotations.
++      await shareBlInGroup(conn, currentGroup, id, row.bl_no ?? null, row.bl_date ?? null)
++    }
++
+     await conn.query(
+       `INSERT INTO audit_log (user_id, action, entity, entity_id, after_json) VALUES (?,?,?,?,?)`,
+       [user.id, 'UPDATE', 'operations', String(id), JSON.stringify(patch)]
+@@ -649,10 +672,6 @@ export async function setSetting(key: string, value: string): Promise<void> {
+   )
+ }
+ 
+-/** Colonne comparée sans casse, espaces ni tirets (« 12345-116-16 » = « 1234511616 »). */
+-const stripped = (column: string): string =>
+-  `REPLACE(REPLACE(REPLACE(REPLACE(UPPER(${column}),'-',''),' ',''),'.',''),'/','')`
+-
+ /**
+  * Clause WHERE commune à `list` et `page`. Tout vient de paramètres liés ; les
+  * colonnes sont écrites ici, jamais prises du renderer.
+@@ -855,6 +874,7 @@ function toOperation(row: RowDataPacket): Operation {
+     status: row.status,
+     isRetour: Boolean(Number(row.is_retour ?? 0)),
+     isVrac: Boolean(Number(row.is_vrac ?? 0)),
++    vracGroupId: row.vrac_group_id == null ? null : Number(row.vrac_group_id),
+     plate: row.plate ?? null,
+     driverName: row.driver_name ?? null,
+     partnerId: num(row.partner_id),
+diff --git a/src/main/db/search-sql.ts b/src/main/db/search-sql.ts
+new file mode 100644
+index 0000000..f45c419
+--- /dev/null
++++ b/src/main/db/search-sql.ts
+@@ -0,0 +1,3 @@
++/** Colonne comparée sans casse, espaces ni tirets (« 12345-116-16 » = « 1234511616 »). */
++export const stripped = (column: string): string =>
++  `REPLACE(REPLACE(REPLACE(REPLACE(UPPER(${column}),'-',''),' ',''),'.',''),'/','')`
+diff --git a/src/main/db/vrac-groups.ts b/src/main/db/vrac-groups.ts
+new file mode 100644
+index 0000000..803b02f
+--- /dev/null
++++ b/src/main/db/vrac-groups.ts
+@@ -0,0 +1,286 @@
++/**
++ * Enlèvements vrac : plusieurs rotations (tickets) d'un même client, sommées pour
++ * établir un seul BL.
++ *
++ * Règles portées ici :
++ *  - un enlèvement OUVERT accepte de nouvelles rotations, un CLOS non ;
++ *  - on ne clôture pas tant qu'une rotation attend sa 2e pesée (son net manquerait
++ *    au total remis au commercial) ;
++ *  - le BL est enregistré sur toutes les rotations à la fois, pour qu'aucune ne
++ *    reste « à établir » ;
++ *  - le total est calculé (somme des nets), jamais stocké.
++ */
++import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
++import type { VracGroupFilter, VracLinkBlInput } from '@shared/channels'
++import { containsPattern, searchKey } from '@shared/domain/search'
++import { closeBlocker, summarizeVracGroup } from '@shared/domain/vrac'
++import type { OperationStatus, SessionUser, VracGroup, VracRotation } from '@shared/types'
++import { getPool } from './pool'
++import { stripped } from './search-sql'
++
++const LIST_LIMIT = 100
++
++const BLOCKER_MESSAGE = {
++  ALREADY_CLOSED: 'Cet enlèvement est déjà clôturé',
++  NO_ROTATION: 'Aucune rotation pesée : rien à clôturer',
++  AWAITING_SECOND: 'Une rotation attend encore sa 2e pesée : terminez-la ou annulez-la avant de clôturer'
++} as const
++
++function num(value: unknown): number | null {
++  return value == null ? null : Number(value)
++}
++
++function toRotation(row: RowDataPacket): VracRotation {
++  return {
++    operationId: Number(row.id),
++    ticketNo: String(row.ticket_no),
++    plate: row.plate ?? null,
++    status: row.status as OperationStatus,
++    productCode: row.product_code ?? null,
++    grossWeight: num(row.gross_weight),
++    tareWeight: num(row.tare_weight),
++    netWeight: num(row.net_weight),
++    weighed: row.second_weight != null,
++    partnerName: row.partner_name ?? null,
++    blNo: row.bl_no ?? null,
++    blDate: row.bl_date ?? null,
++    createdAt: String(row.created_at)
++  }
++}
++
++async function loadGroups(ids: number[]): Promise<VracGroup[]> {
++  if (ids.length === 0) return []
++  const pool = getPool()
++  const [groupRows] = await pool.query<RowDataPacket[]>(
++    'SELECT id, status, created_at, closed_at FROM vrac_groups WHERE id IN (?)',
++    [ids]
++  )
++  const [rotationRows] = await pool.query<RowDataPacket[]>(
++    `SELECT o.vrac_group_id AS group_id, o.id, o.ticket_no, o.plate, o.status,
++            o.gross_weight, o.tare_weight, o.net_weight, o.second_weight,
++            o.partner_name, o.bl_no, o.bl_date, o.created_at,
++            (SELECT l.product_code FROM operation_lines l
++              WHERE l.operation_id = o.id ORDER BY l.position, l.id LIMIT 1) AS product_code
++       FROM operations o
++      WHERE o.vrac_group_id IN (?)
++      ORDER BY o.id`,
++    [ids]
++  )
++
++  const byGroup = new Map<number, VracRotation[]>()
++  for (const row of rotationRows) {
++    const key = Number(row.group_id)
++    byGroup.set(key, [...(byGroup.get(key) ?? []), toRotation(row)])
++  }
++
++  const byId = new Map(groupRows.map((row) => [Number(row.id), row]))
++  return ids.flatMap((id) => {
++    const row = byId.get(id)
++    if (!row) return []
++    return [
++      summarizeVracGroup(
++        {
++          id,
++          status: row.status,
++          createdAt: String(row.created_at),
++          closedAt: row.closed_at ? String(row.closed_at) : null
++        },
++        byGroup.get(id) ?? []
++      )
++    ]
++  })
++}
++
++export async function getGroup(id: number): Promise<VracGroup | null> {
++  return (await loadGroups([id]))[0] ?? null
++}
++
++export async function listGroups(filter: VracGroupFilter = {}): Promise<VracGroup[]> {
++  const where: string[] = []
++  const params: unknown[] = []
++
++  if (filter.status) {
++    where.push('g.status = ?')
++    params.push(filter.status)
++  }
++  if (filter.blPending) {
++    // Même définition que `isGroupBlPending` : une rotation pesée, aucun BL.
++    where.push(
++      `EXISTS (SELECT 1 FROM operations o WHERE o.vrac_group_id = g.id
++                AND o.status <> 'ANNULEE' AND o.second_weight IS NOT NULL)
++       AND NOT EXISTS (SELECT 1 FROM operations o WHERE o.vrac_group_id = g.id
++                AND o.status <> 'ANNULEE' AND o.bl_no IS NOT NULL AND o.bl_no <> '')`
++    )
++  }
++  if (filter.search) {
++    // Comme la recherche de tickets : texte tel quel, et forme tolérante pour le
++    // numéro de ticket et le matricule (« 12345 116 16 » = « 12345-116-16 »).
++    const like = containsPattern(filter.search)
++    const clauses = ['o.ticket_no LIKE ?', 'o.plate LIKE ?', 'o.partner_name LIKE ?', 'o.bl_no LIKE ?']
++    params.push(like, like, like, like)
++    const key = searchKey(filter.search)
++    if (key !== '') {
++      const keyLike = containsPattern(key)
++      for (const column of ['o.ticket_no', 'o.plate']) {
++        clauses.push(`${stripped(column)} LIKE ?`)
++        params.push(keyLike)
++      }
++    }
++    where.push(
++      `EXISTS (SELECT 1 FROM operations o WHERE o.vrac_group_id = g.id AND (${clauses.join(' OR ')}))`
++    )
++  }
++
++  const [rows] = await getPool().query<RowDataPacket[]>(
++    `SELECT g.id FROM vrac_groups g
++      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
++      ORDER BY g.status = 'OUVERT' DESC, g.id DESC
++      LIMIT ${LIST_LIMIT}`,
++    params
++  )
++  return loadGroups(rows.map((row) => Number(row.id)))
++}
++
++/**
++ * Rattache une nouvelle rotation à un enlèvement OUVERT, ou en crée un. Appelé dans
++ * la transaction de création du ticket.
++ */
++export async function assignGroup(
++  conn: PoolConnection,
++  requestedId: number | null | undefined
++): Promise<number> {
++  if (requestedId == null) {
++    const [created] = await conn.query<ResultSetHeader>(
++      "INSERT INTO vrac_groups (status) VALUES ('OUVERT')"
++    )
++    return created.insertId
++  }
++
++  const [rows] = await conn.query<RowDataPacket[]>(
++    'SELECT status FROM vrac_groups WHERE id = ? FOR UPDATE',
++    [requestedId]
++  )
++  const row = rows[0]
++  if (!row) throw new Error('Enlèvement introuvable')
++  if (row.status !== 'OUVERT') throw new Error('Cet enlèvement est clôturé : créez un nouvel enlèvement')
++  return requestedId
++}
++
++/** Un enlèvement resté sans aucun ticket (rotation déclassée en non-vrac) disparaît. */
++export async function dropGroupIfEmpty(conn: PoolConnection, groupId: number): Promise<void> {
++  await conn.query(
++    `DELETE FROM vrac_groups
++      WHERE id = ? AND NOT EXISTS (SELECT 1 FROM operations WHERE vrac_group_id = ?)`,
++    [groupId, groupId]
++  )
++}
++
++/** Le BL d'une rotation est celui de l'enlèvement : on l'étend aux autres rotations. */
++export async function shareBlInGroup(
++  conn: PoolConnection,
++  groupId: number,
++  exceptOperationId: number,
++  blNo: string | null,
++  blDate: string | null
++): Promise<void> {
++  await conn.query(
++    `UPDATE operations SET bl_no = ?, bl_date = ?
++      WHERE vrac_group_id = ? AND id <> ? AND status <> 'ANNULEE'`,
++    [blNo, blDate, groupId, exceptOperationId]
++  )
++}
++
++async function audit(
++  conn: PoolConnection,
++  user: SessionUser,
++  action: string,
++  groupId: number,
++  after: unknown
++): Promise<void> {
++  await conn.query(
++    `INSERT INTO audit_log (user_id, action, entity, entity_id, after_json) VALUES (?,?,?,?,?)`,
++    [user.id, action, 'vrac_groups', String(groupId), JSON.stringify(after)]
++  )
++}
++
++async function inTransaction<T>(work: (conn: PoolConnection) => Promise<T>): Promise<T> {
++  const conn = await getPool().getConnection()
++  try {
++    await conn.beginTransaction()
++    const result = await work(conn)
++    await conn.commit()
++    return result
++  } catch (err) {
++    await conn.rollback().catch(() => undefined)
++    throw err
++  } finally {
++    conn.release()
++  }
++}
++
++async function requireGroup(id: number): Promise<VracGroup> {
++  const group = await getGroup(id)
++  if (!group) throw new Error('Enlèvement introuvable')
++  return group
++}
++
++export async function closeGroup(id: number, user: SessionUser): Promise<VracGroup> {
++  await inTransaction(async (conn) => {
++    // Verrou : deux clics, ou un autre poste qui ajoute une rotation au même instant.
++    await conn.query('SELECT id FROM vrac_groups WHERE id = ? FOR UPDATE', [id])
++    const blocker = closeBlocker(await requireGroup(id))
++    if (blocker) throw new Error(BLOCKER_MESSAGE[blocker])
++
++    await conn.query(
++      "UPDATE vrac_groups SET status = 'CLOS', closed_at = NOW(), closed_by = ? WHERE id = ?",
++      [user.id, id]
++    )
++    await audit(conn, user, 'VRAC_CLOSE', id, {})
++  })
++  return requireGroup(id)
++}
++
++export async function reopenGroup(id: number, user: SessionUser): Promise<VracGroup> {
++  await inTransaction(async (conn) => {
++    await conn.query('SELECT id FROM vrac_groups WHERE id = ? FOR UPDATE', [id])
++    const group = await requireGroup(id)
++    if (group.status !== 'CLOS') throw new Error('Cet enlèvement est déjà ouvert')
++    // Le BL a été établi sur le total : y ajouter une rotation le rendrait faux.
++    if (group.blNo) throw new Error('Un BL est déjà renseigné : on ne peut plus rouvrir cet enlèvement')
++
++    await conn.query(
++      "UPDATE vrac_groups SET status = 'OUVERT', closed_at = NULL, closed_by = NULL WHERE id = ?",
++      [id]
++    )
++    await audit(conn, user, 'VRAC_REOPEN', id, {})
++  })
++  return requireGroup(id)
++}
++
++export async function linkBl(input: VracLinkBlInput, user: SessionUser): Promise<VracGroup> {
++  const blNo = input.blNo.trim()
++  const blDate = input.blDate?.trim() || null
++
++  await inTransaction(async (conn) => {
++    await conn.query('SELECT id FROM vrac_groups WHERE id = ? FOR UPDATE', [input.id])
++    const group = await requireGroup(input.id)
++    if (group.weighedCount === 0) throw new Error('Aucune rotation pesée : pas de BL à rattacher')
++
++    await conn.query(
++      `UPDATE operations SET bl_no = ?, bl_date = ?
++        WHERE vrac_group_id = ? AND status <> 'ANNULEE'`,
++      [blNo, blDate, input.id]
++    )
++    const partner = input.partnerName?.trim()
++    if (partner) {
++      await conn.query(
++        `UPDATE operations SET partner_name = ?
++          WHERE vrac_group_id = ? AND status <> 'ANNULEE'
++            AND (partner_name IS NULL OR partner_name = '')`,
++        [partner.slice(0, 160), input.id]
++      )
++    }
++    await audit(conn, user, 'VRAC_LINK_BL', input.id, { blNo, blDate })
++  })
++  return requireGroup(input.id)
++}
+diff --git a/src/main/ipc.ts b/src/main/ipc.ts
+index a13fce4..9eeb944 100644
+--- a/src/main/ipc.ts
++++ b/src/main/ipc.ts
+@@ -24,7 +24,10 @@ import {
+   opPageSchema,
+   opUpdateSchema,
+   simWeightSchema,
+-  ticketDraftSchema
++  ticketDraftSchema,
++  vracGroupFilterSchema,
++  vracIdSchema,
++  vracLinkBlSchema
+ } from '@shared/schemas'
+ import type { SessionUser } from '@shared/types'
+ import * as auth from './auth'
+@@ -37,6 +40,8 @@ import { printHtml } from './printer'
+ import { balance, listPorts } from './serial/service'
+ import { loadSettings, saveSettings } from './settings'
+ import { buildTicketHtml } from './ticket-html'
++import * as vracGroups from './db/vrac-groups'
++import { buildVracGroupHtml } from './vrac-html'
+ 
+ let session: SessionUser | null = null
+ 
+@@ -231,6 +236,41 @@ export function registerIpc(): void {
+     return { ok: true, message: 'Ticket envoyé à l’imprimante' }
+   })
+ 
++  ipcMain.handle(CH.vracGroups, async (_e, raw) => {
++    requireUser()
++    return vracGroups.listGroups(parse(vracGroupFilterSchema, raw ?? {}))
++  })
++
++  ipcMain.handle(CH.vracGet, async (_e, raw) => {
++    requireUser()
++    return vracGroups.getGroup(parse(vracIdSchema, raw).id)
++  })
++
++  ipcMain.handle(CH.vracClose, async (_e, raw) => {
++    return vracGroups.closeGroup(parse(vracIdSchema, raw).id, requireUser())
++  })
++
++  ipcMain.handle(CH.vracReopen, async (_e, raw) => {
++    return vracGroups.reopenGroup(parse(vracIdSchema, raw).id, requireUser())
++  })
++
++  ipcMain.handle(CH.vracLinkBl, async (_e, raw) => {
++    return vracGroups.linkBl(parse(vracLinkBlSchema, raw), requireUser())
++  })
++
++  ipcMain.handle(CH.vracHtml, async (_e, raw): Promise<string> => {
++    requireUser()
++    const { id, lang } = parse(langSchema, raw)
++    return vracGroupHtml(id, lang)
++  })
++
++  ipcMain.handle(CH.vracPrint, async (_e, raw): Promise<Result> => {
++    requireUser()
++    const { id, lang } = parse(langSchema, raw)
++    await printHtml(await vracGroupHtml(id, lang))
++    return { ok: true, message: 'Récapitulatif envoyé à l’imprimante' }
++  })
++
+   ipcMain.handle(CH.refLocations, async () => {
+     requireUser()
+     return operations.listLocations()
+@@ -284,6 +324,13 @@ async function ticketHtml(id: number, lang: 'fr' | 'ar'): Promise<string> {
+   return buildTicketHtml(operation, { company: company ?? 'Société', locations, lang })
+ }
+ 
++async function vracGroupHtml(id: number, lang: 'fr' | 'ar'): Promise<string> {
++  const group = await vracGroups.getGroup(id)
++  if (!group) throw new Error('Enlèvement introuvable')
++  const company = await operations.getSetting('company_name')
++  return buildVracGroupHtml(group, { company: company ?? 'Société', lang })
++}
++
+ async function appStatus(): Promise<AppStatus> {
+   const settings = loadSettings()
+   return {
+diff --git a/src/main/ticket-html.test.ts b/src/main/ticket-html.test.ts
+index 60deda5..5c00ff5 100644
+--- a/src/main/ticket-html.test.ts
++++ b/src/main/ticket-html.test.ts
+@@ -10,6 +10,7 @@ function ticket(over: Partial<Operation> = {}): Operation {
+     status: 'FERMEE',
+     isRetour: false,
+     isVrac: false,
++    vracGroupId: null,
+     plate: '12345-A-100',
+     driverName: null,
+     partnerId: null,
+diff --git a/src/main/vrac-html.test.ts b/src/main/vrac-html.test.ts
+new file mode 100644
+index 0000000..abc1b0f
+--- /dev/null
++++ b/src/main/vrac-html.test.ts
+@@ -0,0 +1,92 @@
++import { describe, expect, it } from 'vitest'
++import { summarizeVracGroup } from '@shared/domain/vrac'
++import type { VracRotation } from '@shared/types'
++import { buildVracGroupHtml } from './vrac-html'
++
++const rotation = (over: Partial<VracRotation> = {}): VracRotation => ({
++  operationId: 1,
++  ticketNo: 'S-2026-000010',
++  plate: '12345-116-16',
++  status: 'FERMEE',
++  productCode: 'Maïs vrac',
++  grossWeight: 34150,
++  tareWeight: 8400,
++  netWeight: 25750,
++  weighed: true,
++  partnerName: 'HANGAR AIN NOUISSY',
++  blNo: null,
++  blDate: null,
++  createdAt: '2026-10-21 08:00:00',
++  ...over
++})
++
++const group = (status: 'OUVERT' | 'CLOS', rotations: VracRotation[]) =>
++  summarizeVracGroup(
++    { id: 5, status, createdAt: '2026-10-21 08:00:00', closedAt: status === 'CLOS' ? '2026-10-21 17:00:00' : null },
++    rotations
++  )
++
++const four = [
++  rotation({ operationId: 1, ticketNo: 'S-2026-000010', netWeight: 25750 }),
++  rotation({ operationId: 2, ticketNo: 'S-2026-000011', netWeight: 26100 }),
++  rotation({ operationId: 3, ticketNo: 'S-2026-000012', netWeight: 25900 }),
++  rotation({ operationId: 4, ticketNo: 'S-2026-000013', netWeight: 26250 })
++]
++
++describe('buildVracGroupHtml', () => {
++  it('liste chaque rotation et le total à facturer', () => {
++    const html = buildVracGroupHtml(group('CLOS', four), { company: 'ACME', lang: 'fr' })
++
++    expect(html).toContain('ENLÈVEMENT VRAC')
++    for (const no of ['S-2026-000010', 'S-2026-000011', 'S-2026-000012', 'S-2026-000013']) {
++      expect(html).toContain(no)
++    }
++    expect(html).toContain('104000.000 kg')
++    expect(html).toContain('TOTAL NET À FACTURER')
++    expect(html).toContain('HANGAR AIN NOUISSY')
++  })
++
++  it('porte « BL à établir » une fois clôturé et tant que le BL manque', () => {
++    const html = buildVracGroupHtml(group('CLOS', four), { company: 'ACME', lang: 'fr' })
++    expect(html).toContain('BL À ÉTABLIR PAR LE COMMERCIAL')
++    expect(html).not.toContain('PROVISOIRE')
++  })
++
++  it('est marqué provisoire tant que l’enlèvement est ouvert', () => {
++    const html = buildVracGroupHtml(group('OUVERT', four), { company: 'ACME', lang: 'fr' })
++    expect(html).toContain('PROVISOIRE')
++    expect(html).not.toContain('BL À ÉTABLIR')
++  })
++
++  it('imprime le BL et retire le bandeau une fois établi', () => {
++    const withBl = four.map((r) => ({ ...r, blNo: 'BL26-05255' }))
++    const html = buildVracGroupHtml(group('CLOS', withBl), { company: 'ACME', lang: 'fr' })
++    expect(html).toContain('BL26-05255')
++    expect(html).not.toContain('BL À ÉTABLIR')
++  })
++
++  it("n'additionne pas une rotation annulée et la barre", () => {
++    const html = buildVracGroupHtml(
++      group('OUVERT', [...four, rotation({ operationId: 5, ticketNo: 'S-2026-000014', status: 'ANNULEE', netWeight: 9999 })]),
++      { company: 'ACME', lang: 'fr' }
++    )
++    expect(html).toContain('104000.000 kg')
++    expect(html).toContain('Annulée')
++    expect(html).toContain('line-through')
++  })
++
++  it('échappe ce qui vient de la base', () => {
++    const html = buildVracGroupHtml(
++      group('CLOS', [rotation({ partnerName: '<script>alert(1)</script>', productCode: '<b>x</b>' })]),
++      { company: 'ACME', lang: 'fr' }
++    )
++    expect(html).not.toContain('<script>alert(1)</script>')
++    expect(html).not.toContain('<b>x</b>')
++  })
++
++  it("s'imprime en arabe, de droite à gauche", () => {
++    const html = buildVracGroupHtml(group('CLOS', four), { company: 'ACME', lang: 'ar' })
++    expect(html).toContain('dir="rtl"')
++    expect(html).toContain('شحن بالجملة')
++  })
++})
+diff --git a/src/main/vrac-html.ts b/src/main/vrac-html.ts
+new file mode 100644
+index 0000000..b6a2591
+--- /dev/null
++++ b/src/main/vrac-html.ts
+@@ -0,0 +1,154 @@
++/**
++ * Récapitulatif d'un enlèvement vrac, imprimable sur rouleau 80 mm : c'est le
++ * papier remis au commercial pour établir le BL. Il liste chaque rotation (un
++ * ticket) et le total à facturer.
++ *
++ * Même règles que ticket-html.ts : un seul gabarit pour l'aperçu et le papier,
++ * et tout ce qui vient de la base est échappé.
++ */
++import type { Lang } from '@shared/channels'
++import { isGroupBlPending } from '@shared/domain/vrac'
++import type { VracGroup } from '@shared/types'
++import { escapeHtml, formatDateTime } from './ticket-html'
++
++interface Labels {
++  title: string
++  provisional: string
++  closed: string
++  date: string
++  partner: string
++  plate: string
++  rotation: string
++  gross: string
++  tare: string
++  net: string
++  total: string
++  rotations: string
++  product: string
++  bl: string
++  pending: string
++  waiting: string
++  cancelled: string
++}
++
++const LABELS: Record<Lang, Labels> = {
++  fr: {
++    title: 'ENLÈVEMENT VRAC',
++    provisional: 'PROVISOIRE — enlèvement non clôturé',
++    closed: 'Clôturé le',
++    date: 'Début',
++    partner: 'Client',
++    plate: 'Camion',
++    rotation: 'Rotation',
++    gross: 'Brut',
++    tare: 'Tare',
++    net: 'Net',
++    total: 'TOTAL NET À FACTURER',
++    rotations: 'Rotations',
++    product: 'Produit',
++    bl: 'N° BL',
++    pending: 'BL À ÉTABLIR PAR LE COMMERCIAL',
++    waiting: '2e pesée attendue',
++    cancelled: 'Annulée'
++  },
++  ar: {
++    title: 'شحن بالجملة',
++    provisional: 'مؤقت — الشحن لم يُغلق بعد',
++    closed: 'أُغلق في',
++    date: 'البداية',
++    partner: 'الزبون',
++    plate: 'الشاحنة',
++    rotation: 'الرحلة',
++    gross: 'القائم',
++    tare: 'الفارغ',
++    net: 'الصافي',
++    total: 'مجموع الصافي للفوترة',
++    rotations: 'الرحلات',
++    product: 'المنتج',
++    bl: 'رقم الوصل',
++    pending: 'على التجاري إعداد وصل التسليم',
++    waiting: 'الوزن الثاني مطلوب',
++    cancelled: 'ملغاة'
++  }
++}
++
++function kg(value: number | null | undefined): string {
++  return value == null ? '—' : value.toFixed(3)
++}
++
++function row(label: string, value: string | null | undefined, strong = false): string {
++  if (value == null || value === '') return ''
++  return `<div class="row${strong ? ' strong' : ''}"><span>${escapeHtml(label)}</span><span>${escapeHtml(value)}</span></div>`
++}
++
++export function buildVracGroupHtml(group: VracGroup, opts: { company: string; lang: Lang }): string {
++  const t = LABELS[opts.lang]
++
++  const rotations = group.rotations
++    .map((r, index) => {
++      const status = r.status === 'ANNULEE' ? t.cancelled : r.weighed ? '' : t.waiting
++      return `<div class="rot${r.status === 'ANNULEE' ? ' off' : ''}">
++      <div class="row strong"><span>${escapeHtml(`${t.rotation} ${index + 1} — ${r.ticketNo}`)}</span><span>${escapeHtml(r.weighed && r.status !== 'ANNULEE' ? `${kg(r.netWeight)} kg` : status)}</span></div>
++      ${r.plate ? `<div class="sub">${escapeHtml(t.plate)} ${escapeHtml(r.plate)}${r.weighed ? ` · ${escapeHtml(t.gross)} ${escapeHtml(kg(r.grossWeight))} · ${escapeHtml(t.tare)} ${escapeHtml(kg(r.tareWeight))}` : ''}</div>` : ''}
++    </div>`
++    })
++    .join('')
++
++  const products =
++    group.products.length === 0
++      ? ''
++      : `<div class="block">
++    <div class="row strong"><span>${escapeHtml(t.product)}</span><span>${escapeHtml(t.net)}</span></div>
++    ${group.products.map((p) => `<div class="row"><span>${escapeHtml(p.productCode)}</span><span>${escapeHtml(kg(p.quantityKg))} kg</span></div>`).join('')}
++  </div>`
++
++  const banner =
++    group.status === 'OUVERT'
++      ? `<div class="waiting">${escapeHtml(t.provisional)}</div>`
++      : isGroupBlPending(group)
++        ? `<div class="waiting">${escapeHtml(t.pending)}</div>`
++        : ''
++
++  return `<!doctype html>
++<html lang="${opts.lang}" dir="${opts.lang === 'ar' ? 'rtl' : 'ltr'}">
++<head>
++<meta charset="utf-8">
++<title>${escapeHtml(group.reference)}</title>
++<style>
++  @page { size: 80mm auto; margin: 4mm; }
++  * { box-sizing: border-box; }
++  body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 12px; width: 72mm; margin: 0; color: #000; }
++  h1 { font-size: 14px; margin: 0; text-align: center; letter-spacing: .5px; }
++  h2 { font-size: 13px; margin: 6px 0 2px; text-align: center; }
++  .no { text-align: center; font-size: 15px; font-weight: 700; margin: 2px 0 6px; }
++  .row { display: flex; justify-content: space-between; gap: 6px; padding: 1px 0; }
++  .row span:last-child { text-align: ${opts.lang === 'ar' ? 'left' : 'right'}; font-weight: 600; white-space: nowrap; }
++  .row.strong { font-weight: 700; }
++  .rot { border-top: 1px dashed #000; padding: 3px 0; }
++  .rot.off { text-decoration: line-through; opacity: .6; }
++  .sub { font-size: 10px; }
++  .block { border-top: 1px dashed #000; margin-top: 4px; padding-top: 4px; }
++  .waiting { text-align: center; font-weight: 700; border: 1px dashed #000; padding: 4px; margin-top: 6px; }
++  hr { border: 0; border-top: 1px solid #000; margin: 6px 0; }
++  .total { font-size: 16px; }
++  .big { text-align: center; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
++</style>
++</head>
++<body>
++  <h1>${escapeHtml(opts.company)}</h1>
++  <h2>${escapeHtml(t.title)}</h2>
++  <div class="no">${escapeHtml(group.reference)}</div>
++  ${row(t.date, formatDateTime(group.createdAt))}
++  ${group.closedAt ? row(t.closed, formatDateTime(group.closedAt)) : ''}
++  ${row(t.partner, group.partnerName)}
++  ${row(t.bl, group.blNo)}
++  <div class="block"><div class="row strong"><span>${escapeHtml(t.rotations)}</span><span>${group.weighedCount}</span></div></div>
++  ${rotations}
++  ${products}
++  <hr>
++  <div class="row strong total"><span>${escapeHtml(t.total)}</span></div>
++  <div class="big">${escapeHtml(kg(group.totalNetKg))} kg</div>
++  ${banner}
++</body>
++</html>`
++}
+diff --git a/src/preload/index.ts b/src/preload/index.ts
+index d4800a6..7d24506 100644
+--- a/src/preload/index.ts
++++ b/src/preload/index.ts
+@@ -53,6 +53,15 @@ const api: AppApi = {
+     html: (id, lang) => invoke(CH.opsHtml, { id, lang }),
+     print: (id, lang) => invoke(CH.opsPrint, { id, lang })
+   },
++  vrac: {
++    groups: (filter) => invoke(CH.vracGroups, filter),
++    get: (id) => invoke(CH.vracGet, { id }),
++    close: (id) => invoke(CH.vracClose, { id }),
++    reopen: (id) => invoke(CH.vracReopen, { id }),
++    linkBl: (input) => invoke(CH.vracLinkBl, input),
++    html: (id, lang) => invoke(CH.vracHtml, { id, lang }),
++    print: (id, lang) => invoke(CH.vracPrint, { id, lang })
++  },
+   ref: {
+     locations: () => invoke(CH.refLocations)
+   },
+diff --git a/src/renderer/src/App.tsx b/src/renderer/src/App.tsx
+index 76a53ea..cc049ef 100644
+--- a/src/renderer/src/App.tsx
++++ b/src/renderer/src/App.tsx
+@@ -8,6 +8,7 @@ import Balance2 from './pages/Balance2'
+ import Login from './pages/Login'
+ import Operations from './pages/Operations'
+ import Settings from './pages/Settings'
++import VracGroups from './pages/VracGroups'
+ 
+ /**
+  * Le menu latéral ne porte que les types de pesée (on ne mélange pas les entrées
+@@ -117,6 +118,9 @@ function Shell({ user, onLogout }: { user: SessionUser; onLogout: () => void })
+               <NavLink to={`${currentMenu.path}/balance-1`}>{t('nav.balance1')}</NavLink>
+               <NavLink to={`${currentMenu.path}/balance-2`}>{t('nav.balance2')}</NavLink>
+               <NavLink to={`${currentMenu.path}/tickets`}>{t('nav.tickets')}</NavLink>
++              {currentMenu.type === 'SORTIE' && (
++                <NavLink to={`${currentMenu.path}/vrac`}>{t('nav.vrac')}</NavLink>
++              )}
+             </nav>
+           </header>
+         )}
+@@ -127,6 +131,7 @@ function Shell({ user, onLogout }: { user: SessionUser; onLogout: () => void })
+                 <Route path={`${menu.path}/balance-1`} element={<Balance1 type={menu.type} />} />
+                 <Route path={`${menu.path}/balance-2`} element={<Balance2 type={menu.type} />} />
+                 <Route path={`${menu.path}/tickets`} element={<Operations type={menu.type} />} />
++                {menu.type === 'SORTIE' && <Route path={`${menu.path}/vrac`} element={<VracGroups />} />}
+               </Fragment>
+             ))}
+             <Route path="/settings" element={<Settings />} />
+diff --git a/src/renderer/src/components/VracGroupPicker.tsx b/src/renderer/src/components/VracGroupPicker.tsx
+new file mode 100644
+index 0000000..0c9e428
+--- /dev/null
++++ b/src/renderer/src/components/VracGroupPicker.tsx
+@@ -0,0 +1,79 @@
++import { useEffect, useState } from 'react'
++import { normalizePlate } from '@shared/domain/plate'
++import type { VracGroup } from '@shared/types'
++import { api, call, formatKg } from '../api'
++import { useI18n } from '../i18n'
++
++/**
++ * Choix de l'enlèvement d'une rotation vrac : un nouvel enlèvement, ou l'un de
++ * ceux encore ouverts (la rotation suivante du même client).
++ *
++ * Quand le camion a déjà une rotation dans exactement un enlèvement ouvert, ce
++ * dernier est proposé d'office : c'est le cas courant (le même camion revient).
++ */
++export default function VracGroupPicker({
++  plate,
++  value,
++  onChange,
++  disabled = false
++}: {
++  plate: string
++  /** null = nouvel enlèvement. */
++  value: number | null
++  onChange: (groupId: number | null) => void
++  disabled?: boolean
++}) {
++  const { t, lang } = useI18n()
++  const [groups, setGroups] = useState<VracGroup[]>([])
++  const [touched, setTouched] = useState(false)
++
++  useEffect(() => {
++    let alive = true
++    call(api.vrac.groups({ status: 'OUVERT' }))
++      .then((list) => alive && setGroups(list))
++      .catch(() => alive && setGroups([]))
++    return () => {
++      alive = false
++    }
++  }, [])
++
++  // Même camion que l'une des rotations d'un seul enlèvement ouvert : on le propose,
++  // tant que l'opérateur n'a pas fait son propre choix.
++  useEffect(() => {
++    if (touched) return
++    const key = normalizePlate(plate)
++    if (key === '') return
++    const matches = groups.filter((group) =>
++      group.rotations.some((r) => r.plate != null && normalizePlate(r.plate) === key)
++    )
++    onChange(matches.length === 1 ? (matches[0]?.id ?? null) : null)
++    // `onChange` est un setState côté appelant : seul le contexte (camion, liste) compte ici.
++  }, [plate, groups, touched])
++
++  return (
++    <label>
++      {t('vracGroup.picker')}
++      <select
++        value={value ?? ''}
++        disabled={disabled}
++        onChange={(e) => {
++          setTouched(true)
++          onChange(e.target.value === '' ? null : Number(e.target.value))
++        }}
++      >
++        <option value="">{t('vracGroup.new')}</option>
++        {groups.map((group) => (
++          <option key={group.id} value={group.id}>
++            {t('vracGroup.option', {
++              ref: group.reference,
++              partner: group.partnerName ?? '—',
++              count: String(group.weighedCount),
++              total: `${formatKg(group.totalNetKg, lang)}`
++            })}
++          </option>
++        ))}
++      </select>
++      <span className="muted">{t('vracGroup.pickerHint')}</span>
++    </label>
++  )
++}
+diff --git a/src/renderer/src/i18n.tsx b/src/renderer/src/i18n.tsx
+index 12a92e6..c1f513d 100644
+--- a/src/renderer/src/i18n.tsx
++++ b/src/renderer/src/i18n.tsx
+@@ -114,7 +114,7 @@ const fr = {
+   'vrac.productHint': 'Un seul produit. Aucune quantité à saisir : le poids net pesé en tient lieu.',
+   'vrac.needProduct': 'Indiquez le produit avant la 2e pesée.',
+   'vrac.handover':
+-    'Remettez ce bon de pesée au commercial : le poids net est la quantité à facturer. Renseignez le n° de BL dans Tickets quand il est établi.',
++    'Rotation enregistrée : son poids net s’ajoute à l’enlèvement du client.',
+   'ops.blPending': 'BL à établir',
+   'ops.blPendingOnly': 'BL à établir uniquement',
+   'ops.blCheck': 'Vérifier le BL',
+@@ -123,6 +123,43 @@ const fr = {
+     'BL {reference} : {bl}, pesée : {net} (différence {diff}). À vérifier avec le commercial.',
+   'ops.blCheck.unknown':
+     'BL {reference} trouvé, mais son poids est inconnu : comparaison impossible avec la pesée.',
++  'nav.vrac': 'Enlèvements vrac',
++  'vracGroup.picker': 'Enlèvement',
++  'vracGroup.new': 'Nouvel enlèvement',
++  'vracGroup.pickerHint':
++    'Plusieurs rotations du même client = un seul enlèvement, donc un seul BL sur la somme des nets.',
++  'vracGroup.option': '{ref} · {partner} · {count} rotation(s) · {total}',
++  'vracGroup.current': 'Enlèvement {ref} : {count} rotation(s) pesée(s), total {total}.',
++  'vracGroup.nextHint':
++    'Si le client revient, pesez la rotation suivante à la 1re balance (même enlèvement). Quand il a fini, clôturez l’enlèvement dans « Enlèvements vrac » et remettez le récapitulatif au commercial.',
++  'vracGroup.title': 'Enlèvements vrac',
++  'vracGroup.intro':
++    'Un client prend son vrac en plusieurs rotations : chacune est un ticket, l’enlèvement les additionne et le commercial établit un seul BL sur le total.',
++  'vracGroup.empty': 'Aucun enlèvement vrac.',
++  'vracGroup.status.OUVERT': 'Ouvert',
++  'vracGroup.status.CLOS': 'Clôturé',
++  'vracGroup.filter.OUVERT': 'Ouverts',
++  'vracGroup.filter.CLOS': 'Clôturés',
++  'vracGroup.filter.all': 'Tous',
++  'vracGroup.col.ref': 'Enlèvement',
++  'vracGroup.col.partner': 'Client',
++  'vracGroup.col.rotations': 'Rotations',
++  'vracGroup.col.total': 'Total net',
++  'vracGroup.col.bl': 'BL',
++  'vracGroup.col.status': 'État',
++  'vracGroup.awaiting': '{count} en attente de 2e pesée',
++  'vracGroup.close': 'Clôturer',
++  'vracGroup.reopen': 'Rouvrir',
++  'vracGroup.recap': 'Récapitulatif',
++  'vracGroup.details': 'Détails',
++  'vracGroup.linkBl': 'Lier le BL',
++  'vracGroup.blPlaceholder': 'N° du BL établi par le commercial',
++  'vracGroup.blLinked': 'BL {reference} rattaché à toutes les rotations.',
++  'vracGroup.closed': 'Enlèvement clôturé : le total est prêt pour le commercial.',
++  'vracGroup.confirmClose':
++    'Clôturer cet enlèvement ? Plus aucune rotation ne pourra y être ajoutée (vous pourrez le rouvrir tant qu’aucun BL n’est lié).',
++  'vracGroup.rotation.cancelled': 'annulée',
++  'vracGroup.rotation.waiting': 'en attente',
+   'station.firstWeigh': '1re pesée',
+   'station.secondWeigh': '2e pesée',
+   'station.capture': 'Capturer',
+@@ -342,8 +379,7 @@ const ar: Record<TKey, string> = {
+   'vrac.product': 'المنتج (بالجملة)',
+   'vrac.productHint': 'منتج واحد. لا حاجة لإدخال كمية: الوزن الصافي يحل محلها.',
+   'vrac.needProduct': 'حدّد المنتج قبل الوزن الثاني.',
+-  'vrac.handover':
+-    'سلّم تذكرة الوزن هذه للتجاري: الوزن الصافي هو الكمية الواجب فوترتها. سجّل رقم الوصل في التذاكر عند إعداده.',
++  'vrac.handover': 'تم تسجيل الرحلة: وزنها الصافي يُضاف إلى شحنة الزبون.',
+   'ops.blPending': 'وصل قيد الإعداد',
+   'ops.blPendingOnly': 'الوصولات قيد الإعداد فقط',
+   'ops.blCheck': 'التحقق من الوصل',
+@@ -351,6 +387,43 @@ const ar: Record<TKey, string> = {
+   'ops.blCheck.differs':
+     'الوصل {reference}: {bl}، الوزن: {net} (الفرق {diff}). تحقّق مع التجاري.',
+   'ops.blCheck.unknown': 'تم إيجاد الوصل {reference} لكن وزنه غير معروف: تعذّرت المقارنة مع الوزن.',
++  'nav.vrac': 'شحنات بالجملة',
++  'vracGroup.picker': 'الشحنة',
++  'vracGroup.new': 'شحنة جديدة',
++  'vracGroup.pickerHint':
++    'عدة رحلات لنفس الزبون = شحنة واحدة، أي وصل واحد على مجموع الأوزان الصافية.',
++  'vracGroup.option': '{ref} · {partner} · {count} رحلة · {total}',
++  'vracGroup.current': 'الشحنة {ref}: {count} رحلة موزونة، المجموع {total}.',
++  'vracGroup.nextHint':
++    'إذا عاد الزبون فزن الرحلة التالية في الميزان الأول (نفس الشحنة). عند الانتهاء أغلق الشحنة في «شحنات بالجملة» وسلّم الملخص للتجاري.',
++  'vracGroup.title': 'شحنات بالجملة',
++  'vracGroup.intro':
++    'يأخذ الزبون بضاعته بالجملة على عدة رحلات: كل رحلة تذكرة، والشحنة تجمعها ويُعدّ التجاري وصلاً واحداً على المجموع.',
++  'vracGroup.empty': 'لا توجد شحنات بالجملة.',
++  'vracGroup.status.OUVERT': 'مفتوحة',
++  'vracGroup.status.CLOS': 'مغلقة',
++  'vracGroup.filter.OUVERT': 'المفتوحة',
++  'vracGroup.filter.CLOS': 'المغلقة',
++  'vracGroup.filter.all': 'الكل',
++  'vracGroup.col.ref': 'الشحنة',
++  'vracGroup.col.partner': 'الزبون',
++  'vracGroup.col.rotations': 'الرحلات',
++  'vracGroup.col.total': 'مجموع الصافي',
++  'vracGroup.col.bl': 'الوصل',
++  'vracGroup.col.status': 'الحالة',
++  'vracGroup.awaiting': '{count} بانتظار الوزن الثاني',
++  'vracGroup.close': 'إغلاق',
++  'vracGroup.reopen': 'إعادة الفتح',
++  'vracGroup.recap': 'الملخص',
++  'vracGroup.details': 'التفاصيل',
++  'vracGroup.linkBl': 'ربط الوصل',
++  'vracGroup.blPlaceholder': 'رقم الوصل الذي أعدّه التجاري',
++  'vracGroup.blLinked': 'تم ربط الوصل {reference} بكل الرحلات.',
++  'vracGroup.closed': 'تم إغلاق الشحنة: المجموع جاهز للتجاري.',
++  'vracGroup.confirmClose':
++    'إغلاق هذه الشحنة؟ لن يمكن إضافة رحلات إليها (يمكن إعادة فتحها ما دام لا وصل مرتبط).',
++  'vracGroup.rotation.cancelled': 'ملغاة',
++  'vracGroup.rotation.waiting': 'قيد الانتظار',
+   'station.firstWeigh': 'الوزن الأول',
+   'station.secondWeigh': 'الوزن الثاني',
+   'station.capture': 'تسجيل',
+diff --git a/src/renderer/src/pages/Balance1.tsx b/src/renderer/src/pages/Balance1.tsx
+index ac52702..989a51c 100644
+--- a/src/renderer/src/pages/Balance1.tsx
++++ b/src/renderer/src/pages/Balance1.tsx
+@@ -7,6 +7,7 @@ import CaptureBox, { type CaptureRequest } from '../components/CaptureBox'
+ import ManualMark from '../components/ManualMark'
+ import ProductLines, { cleanLines, hasIncompleteLine } from '../components/ProductLines'
+ import RetourToggle from '../components/RetourToggle'
++import VracGroupPicker from '../components/VracGroupPicker'
+ import VracToggle from '../components/VracToggle'
+ import SimulatorPanel from '../components/SimulatorPanel'
+ import TicketPreview from '../components/TicketPreview'
+@@ -35,6 +36,7 @@ export default function Balance1({ type }: { type: OperationType }) {
+   const [notes, setNotes] = useState('')
+   const [isRetour, setIsRetour] = useState(false)
+   const [isVrac, setIsVrac] = useState(false)
++  const [vracGroupId, setVracGroupId] = useState<number | null>(null)
+   const [lines, setLines] = useState<ProductLine[]>(() => blankLines(type))
+   const [ticket, setTicket] = useState<Operation | null>(null)
+   // Camion repassé sur la balance : la 1re pesée du ticket existant est à refaire.
+@@ -72,6 +74,7 @@ export default function Balance1({ type }: { type: OperationType }) {
+               type,
+               isRetour,
+               isVrac,
++              vracGroupId: isVrac ? vracGroupId : null,
+               plate: plate || null,
+               driverName: driverName || null,
+               notes: notes || null,
+@@ -98,7 +101,7 @@ export default function Balance1({ type }: { type: OperationType }) {
+         setBusy(false)
+       }
+     },
+-    [type, isRetour, isVrac, plate, driverName, notes, lines, knowsProduct, redo, stale, t]
++    [type, isRetour, isVrac, vracGroupId, plate, driverName, notes, lines, knowsProduct, redo, stale, t]
+   )
+ 
+   const balance = useBalance(setError)
+@@ -121,6 +124,7 @@ export default function Balance1({ type }: { type: OperationType }) {
+     setNotes('')
+     setIsRetour(false)
+     setIsVrac(false)
++    setVracGroupId(null)
+     setLines(blankLines(type))
+     setError(null)
+   }
+@@ -289,6 +293,14 @@ export default function Balance1({ type }: { type: OperationType }) {
+               onChange={setIsVrac}
+               disabled={busy}
+             />
++            {isVrac && (
++              <VracGroupPicker
++                plate={plate}
++                value={vracGroupId}
++                onChange={setVracGroupId}
++                disabled={busy}
++              />
++            )}
+ 
+             {knowsProduct ? (
+               <ProductLines lines={lines} onChange={setLines} disabled={busy} />
+diff --git a/src/renderer/src/pages/Balance2.tsx b/src/renderer/src/pages/Balance2.tsx
+index 7b3e252..0018a2f 100644
+--- a/src/renderer/src/pages/Balance2.tsx
++++ b/src/renderer/src/pages/Balance2.tsx
+@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
+ import type { Location, OpUpdate } from '@shared/channels'
+ import { asksFrom, asksTo, locationFieldsFor } from '@shared/domain/locations'
+ import { isManualKind } from '@shared/domain/weighing'
+-import type { Operation, OperationType, ProductLine, WeightSample } from '@shared/types'
++import type { VracGroup, Operation, OperationType, ProductLine, WeightSample } from '@shared/types'
+ import { api, call, errorMessage, formatDateTime, formatKg } from '../api'
+ import CaptureBox, { type CaptureRequest } from '../components/CaptureBox'
+ import LocationPickers from '../components/LocationPickers'
+@@ -75,6 +75,23 @@ const EMPTY_FORM: CompleteForm = {
+ export default function Balance2({ type }: { type: OperationType }) {
+   const { t, lang } = useI18n()
+   const [selected, setSelected] = useState<Operation | null>(null)
++  // Enlèvement du ticket vrac pesé : son total court avec chaque rotation.
++  const [vracGroup, setVracGroup] = useState<VracGroup | null>(null)
++  const vracGroupId = selected?.vracGroupId ?? null
++  const secondDone = selected?.second != null
++  useEffect(() => {
++    if (vracGroupId == null || !secondDone) {
++      setVracGroup(null)
++      return
++    }
++    let alive = true
++    call(api.vrac.get(vracGroupId))
++      .then((group) => alive && setVracGroup(group))
++      .catch(() => alive && setVracGroup(null))
++    return () => {
++      alive = false
++    }
++  }, [vracGroupId, secondDone])
+   const [form, setForm] = useState<CompleteForm>(EMPTY_FORM)
+   const [lines, setLines] = useState<ProductLine[]>([])
+   const [locations, setLocations] = useState<Location[]>([])
+@@ -647,7 +664,23 @@ export default function Balance2({ type }: { type: OperationType }) {
+                   )}
+                 </div>
+ 
+-                {selected.isVrac && <p className="hint-box">{t('vrac.handover')}</p>}
++                {selected.isVrac && (
++                  <div className="hint-box">
++                    <p>{t('vrac.handover')}</p>
++                    {vracGroup && (
++                      <p>
++                        <strong>
++                          {t('vracGroup.current', {
++                            ref: vracGroup.reference,
++                            count: String(vracGroup.weighedCount),
++                            total: `${formatKg(vracGroup.totalNetKg, lang)}`
++                          })}
++                        </strong>
++                      </p>
++                    )}
++                    <p className="muted">{t('vracGroup.nextHint')}</p>
++                  </div>
++                )}
+ 
+                 {!closed && (
+                   <div className="row">
+diff --git a/src/renderer/src/pages/Operations.tsx b/src/renderer/src/pages/Operations.tsx
+index 749a0dc..3005da2 100644
+--- a/src/renderer/src/pages/Operations.tsx
++++ b/src/renderer/src/pages/Operations.tsx
+@@ -156,7 +156,10 @@ export default function Operations({ type }: { type: OperationType }) {
+           : current
+       )
+ 
+-      const check = compareBlToNet(lookup.totalWeightKg, row.netWeight)
++      // Un vrac est facturé sur le total de son enlèvement (toutes les rotations),
++      // pas sur le net de ce seul ticket.
++      const group = row.vracGroupId != null ? await call(api.vrac.get(row.vracGroupId)) : null
++      const check = compareBlToNet(lookup.totalWeightKg, group ? group.totalNetKg : row.netWeight)
+       if (check.kind === 'unknown') {
+         setBlNotice({ kind: 'warn', text: t('ops.blCheck.unknown', { reference: lookup.reference }) })
+       } else {
+diff --git a/src/renderer/src/pages/VracGroups.tsx b/src/renderer/src/pages/VracGroups.tsx
+new file mode 100644
+index 0000000..f57026d
+--- /dev/null
++++ b/src/renderer/src/pages/VracGroups.tsx
+@@ -0,0 +1,362 @@
++import { Fragment, useCallback, useEffect, useState } from 'react'
++import { closeBlocker, compareBlToNet, isGroupBlPending } from '@shared/domain/vrac'
++import type { VracGroup, VracGroupStatus } from '@shared/types'
++import { api, call, errorMessage, formatDateTime, formatKg } from '../api'
++import TicketPreview from '../components/TicketPreview'
++import { useI18n } from '../i18n'
++
++type StatusFilter = VracGroupStatus | ''
++
++/** Ce que la dernière vérification a trouvé dans HFSQL pour le BL tapé. */
++interface BlDraft {
++  blNo: string
++  blDate: string | null
++  clientName: string | null
++}
++
++/**
++ * Enlèvements vrac : un client prend son vrac en plusieurs rotations, chacune est
++ * un ticket. L'enlèvement les additionne ; le commercial établit UN BL sur le total.
++ *
++ * Flux : on clôture quand le client a fini, on remet le récapitulatif au
++ * commercial, puis on rattache son BL (vérifié dans HFSQL) à toutes les rotations.
++ */
++export default function VracGroups() {
++  const { t, lang } = useI18n()
++  const [status, setStatus] = useState<StatusFilter>('OUVERT')
++  const [blPendingOnly, setBlPendingOnly] = useState(false)
++  const [search, setSearch] = useState('')
++  const [groups, setGroups] = useState<VracGroup[]>([])
++  const [expanded, setExpanded] = useState<number | null>(null)
++  const [blDraft, setBlDraft] = useState<BlDraft>({ blNo: '', blDate: null, clientName: null })
++  const [busy, setBusy] = useState(false)
++  const [error, setError] = useState<string | null>(null)
++  const [notice, setNotice] = useState<{ kind: 'ok' | 'warn'; text: string } | null>(null)
++  const [preview, setPreview] = useState<{ id: number; html: string } | null>(null)
++
++  const reload = useCallback(async () => {
++    try {
++      setGroups(
++        await call(
++          api.vrac.groups({
++            status: status === '' ? null : status,
++            blPending: blPendingOnly,
++            search: search.trim() || null
++          })
++        )
++      )
++      setError(null)
++    } catch (err) {
++      setError(errorMessage(err))
++    }
++  }, [status, blPendingOnly, search])
++
++  useEffect(() => {
++    const timer = setTimeout(() => void reload(), 250)
++    return () => clearTimeout(timer)
++  }, [reload])
++
++  async function run(work: () => Promise<void>): Promise<void> {
++    setBusy(true)
++    setError(null)
++    setNotice(null)
++    try {
++      await work()
++      await reload()
++    } catch (err) {
++      setError(errorMessage(err))
++    } finally {
++      setBusy(false)
++    }
++  }
++
++  async function showRecap(id: number): Promise<void> {
++    setPreview({ id, html: await call(api.vrac.html(id, lang)) })
++  }
++
++  const close = (group: VracGroup): Promise<void> =>
++    run(async () => {
++      if (!window.confirm(t('vracGroup.confirmClose'))) return
++      await call(api.vrac.close(group.id))
++      setNotice({ kind: 'ok', text: t('vracGroup.closed') })
++      // Le récapitulatif est ce qu'on remet au commercial : on l'ouvre tout de suite.
++      await showRecap(group.id)
++    })
++
++  const reopen = (group: VracGroup): Promise<void> =>
++    run(async () => {
++      await call(api.vrac.reopen(group.id))
++    })
++
++  /**
++   * Retrouve le BL dans HFSQL : reprend sa référence, sa date et son client, et
++   * compare son poids au total pesé. Informatif : une différence est signalée,
++   * jamais bloquante (le commercial a pu arrondir, ou facturer en plus).
++   */
++  const verifyBl = (group: VracGroup): Promise<void> =>
++    run(async () => {
++      const number = blDraft.blNo.trim()
++      if (!number) return
++      const lookup = await call(api.bl.lookup(number))
++      setBlDraft({ blNo: lookup.reference, blDate: lookup.date, clientName: lookup.clientName })
++
++      const check = compareBlToNet(lookup.totalWeightKg, group.totalNetKg)
++      if (check.kind === 'unknown') {
++        setNotice({ kind: 'warn', text: t('ops.blCheck.unknown', { reference: lookup.reference }) })
++      } else {
++        setNotice({
++          kind: check.kind === 'match' ? 'ok' : 'warn',
++          text: t(check.kind === 'match' ? 'ops.blCheck.match' : 'ops.blCheck.differs', {
++            reference: lookup.reference,
++            bl: formatKg(check.blWeightKg, lang),
++            net: formatKg(check.netKg, lang),
++            diff: formatKg(check.diffKg, lang)
++          })
++        })
++      }
++    })
++
++  const linkBl = (group: VracGroup): Promise<void> =>
++    run(async () => {
++      const blNo = blDraft.blNo.trim()
++      if (!blNo) return
++      await call(
++        api.vrac.linkBl({
++          id: group.id,
++          blNo,
++          blDate: blDraft.blDate,
++          partnerName: blDraft.clientName
++        })
++      )
++      setNotice({ kind: 'ok', text: t('vracGroup.blLinked', { reference: blNo }) })
++      setBlDraft({ blNo: '', blDate: null, clientName: null })
++    })
++
++  const toggle = (group: VracGroup): void => {
++    setExpanded((current) => (current === group.id ? null : group.id))
++    setBlDraft({ blNo: group.blNo ?? '', blDate: group.blDate, clientName: null })
++    setNotice(null)
++  }
++
++  return (
++    <div className="card">
++      <h2>{t('vracGroup.title')}</h2>
++      <p className="muted">{t('vracGroup.intro')}</p>
++
++      <div className="row filters">
++        <input
++          type="search"
++          value={search}
++          placeholder={t('common.search')}
++          onChange={(e) => setSearch(e.target.value)}
++        />
++        <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
++          <option value="OUVERT">{t('vracGroup.filter.OUVERT')}</option>
++          <option value="CLOS">{t('vracGroup.filter.CLOS')}</option>
++          <option value="">{t('vracGroup.filter.all')}</option>
++        </select>
++        <label className="inline">
++          <input
++            type="checkbox"
++            checked={blPendingOnly}
++            onChange={(e) => setBlPendingOnly(e.target.checked)}
++          />
++          {t('ops.blPendingOnly')}
++        </label>
++        <button type="button" className="ghost" onClick={() => void reload()}>
++          {t('common.refresh')}
++        </button>
++      </div>
++
++      {error && <p className="error">{error}</p>}
++      {notice && (
++        <p className={notice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">
++          {notice.text}
++        </p>
++      )}
++
++      <table>
++        <thead>
++          <tr>
++            <th>{t('vracGroup.col.ref')}</th>
++            <th>{t('vracGroup.col.partner')}</th>
++            <th>{t('vracGroup.col.rotations')}</th>
++            <th>{t('vracGroup.col.total')}</th>
++            <th>{t('vracGroup.col.bl')}</th>
++            <th>{t('vracGroup.col.status')}</th>
++            <th />
++          </tr>
++        </thead>
++        <tbody>
++          {groups.length === 0 && (
++            <tr>
++              <td colSpan={7} className="muted">
++                {t('vracGroup.empty')}
++              </td>
++            </tr>
++          )}
++          {groups.map((group) => {
++            const blocker = closeBlocker(group)
++            const isOpen = expanded === group.id
++            return (
++              <Fragment key={group.id}>
++                <tr>
++                  <td>
++                    <strong>{group.reference}</strong>
++                    <br />
++                    <span className="muted">{formatDateTime(group.createdAt)}</span>
++                  </td>
++                  <td>{group.partnerName ?? '—'}</td>
++                  <td>
++                    {group.weighedCount}
++                    {group.awaitingCount > 0 && (
++                      <>
++                        <br />
++                        <span className="badge warn">
++                          {t('vracGroup.awaiting', { count: String(group.awaitingCount) })}
++                        </span>
++                      </>
++                    )}
++                  </td>
++                  <td>
++                    <strong>{formatKg(group.totalNetKg, lang)}</strong>
++                    {group.products.length > 0 && (
++                      <>
++                        <br />
++                        <span className="muted">
++                          {group.products.map((p) => p.productCode).join(', ')}
++                        </span>
++                      </>
++                    )}
++                  </td>
++                  <td>
++                    {group.blNo ?? '—'}
++                    {isGroupBlPending(group) && (
++                      <>
++                        <br />
++                        <span className="badge">{t('ops.blPending')}</span>
++                      </>
++                    )}
++                  </td>
++                  <td>
++                    <span className={group.status === 'OUVERT' ? 'badge warn' : 'badge ok'}>
++                      {t(`vracGroup.status.${group.status}`)}
++                    </span>
++                  </td>
++                  <td>
++                    <div className="row actions">
++                      <button type="button" className="ghost" onClick={() => toggle(group)}>
++                        {t('vracGroup.details')}
++                      </button>
++                      {group.status === 'OUVERT' ? (
++                        <button
++                          type="button"
++                          className="primary"
++                          disabled={busy || blocker !== null}
++                          onClick={() => void close(group)}
++                        >
++                          {t('vracGroup.close')}
++                        </button>
++                      ) : (
++                        !group.blNo && (
++                          <button
++                            type="button"
++                            className="ghost"
++                            disabled={busy}
++                            onClick={() => void reopen(group)}
++                          >
++                            {t('vracGroup.reopen')}
++                          </button>
++                        )
++                      )}
++                      <button
++                        type="button"
++                        className="ghost"
++                        disabled={busy}
++                        onClick={() => void showRecap(group.id).catch((e) => setError(errorMessage(e)))}
++                      >
++                        {t('vracGroup.recap')}
++                      </button>
++                    </div>
++                  </td>
++                </tr>
++
++                {isOpen && (
++                  <tr>
++                    <td colSpan={7}>
++                      <table>
++                        <tbody>
++                          {group.rotations.map((rotation, index) => (
++                            <tr key={rotation.operationId}>
++                              <td>{index + 1}</td>
++                              <td>{rotation.ticketNo}</td>
++                              <td>{rotation.plate ?? '—'}</td>
++                              <td>{rotation.productCode ?? '—'}</td>
++                              <td>
++                                {rotation.status === 'ANNULEE'
++                                  ? t('vracGroup.rotation.cancelled')
++                                  : rotation.weighed
++                                    ? formatKg(rotation.netWeight, lang)
++                                    : t('vracGroup.rotation.waiting')}
++                              </td>
++                            </tr>
++                          ))}
++                        </tbody>
++                      </table>
++
++                      {group.weighedCount > 0 && (
++                        <div className="row bl-lookup">
++                          <input
++                            value={blDraft.blNo}
++                            maxLength={64}
++                            placeholder={t('vracGroup.blPlaceholder')}
++                            disabled={busy}
++                            onChange={(e) =>
++                              setBlDraft({ blNo: e.target.value, blDate: null, clientName: null })
++                            }
++                          />
++                          <button
++                            type="button"
++                            className="ghost"
++                            disabled={busy || blDraft.blNo.trim() === ''}
++                            onClick={() => void verifyBl(group)}
++                          >
++                            {t('ops.blCheck')}
++                          </button>
++                          <button
++                            type="button"
++                            className="primary"
++                            disabled={busy || blDraft.blNo.trim() === ''}
++                            onClick={() => void linkBl(group)}
++                          >
++                            {t('vracGroup.linkBl')}
++                          </button>
++                        </div>
++                      )}
++                    </td>
++                  </tr>
++                )}
++              </Fragment>
++            )
++          })}
++        </tbody>
++      </table>
++
++      {preview && (
++        <TicketPreview
++          html={preview.html}
++          busy={busy}
++          onClose={() => setPreview(null)}
++          onPrint={() => {
++            const id = preview.id
++            setPreview(null)
++            void run(async () => {
++              const result = await call(api.vrac.print(id, lang))
++              setNotice({ kind: 'ok', text: result.message ?? '' })
++            })
++          }}
++        />
++      )}
++    </div>
++  )
++}
+diff --git a/src/shared/channels.ts b/src/shared/channels.ts
+index 6614ba3..1ed090f 100644
+--- a/src/shared/channels.ts
++++ b/src/shared/channels.ts
+@@ -14,7 +14,9 @@ import type {
+   ProductLine,
+   SessionUser,
+   TicketDraft,
+-  WeightSample
++  WeightSample,
++  VracGroup,
++  VracGroupStatus
+ } from './types'
+ 
+ export const CH = {
+@@ -42,6 +44,13 @@ export const CH = {
+   opsSetLines: 'ops:setLines',
+   opsHtml: 'ops:html',
+   opsPrint: 'ops:print',
++  vracGroups: 'vrac:groups',
++  vracGet: 'vrac:get',
++  vracClose: 'vrac:close',
++  vracReopen: 'vrac:reopen',
++  vracLinkBl: 'vrac:linkBl',
++  vracHtml: 'vrac:html',
++  vracPrint: 'vrac:print',
+   refLocations: 'ref:locations',
+   blLookup: 'bl:lookup',
+   balanceStart: 'balance:start',
+@@ -171,6 +180,21 @@ export interface OpUpdate {
+   notes?: string | null
+ }
+ 
++export interface VracGroupFilter {
++  status?: VracGroupStatus | null
++  /** Enlèvements pesés dont le BL n'est pas encore établi. */
++  blPending?: boolean
++  search?: string | null
++}
++
++export interface VracLinkBlInput {
++  id: number
++  blNo: string
++  blDate?: string | null
++  /** Repris du BL HFSQL ; ne remplace jamais un client déjà saisi. */
++  partnerName?: string | null
++}
++
+ export type Lang = 'fr' | 'ar'
+ 
+ /** Surface exposée au renderer via `window.api`. */
+@@ -216,6 +240,19 @@ export interface AppApi {
+     html(id: number, lang: Lang): Promise<string>
+     print(id: number, lang: Lang): Promise<Result>
+   }
++  /** Enlèvements vrac : plusieurs rotations sommées pour un seul BL. */
++  vrac: {
++    groups(filter: VracGroupFilter): Promise<VracGroup[]>
++    get(id: number): Promise<VracGroup | null>
++    /** Plus aucune rotation à venir : le total est remis au commercial. */
++    close(id: number): Promise<VracGroup>
++    /** Rouvre un enlèvement clos par erreur (refusé une fois le BL renseigné). */
++    reopen(id: number): Promise<VracGroup>
++    /** Enregistre le BL établi par le commercial sur toutes les rotations. */
++    linkBl(input: VracLinkBlInput): Promise<VracGroup>
++    html(id: number, lang: Lang): Promise<string>
++    print(id: number, lang: Lang): Promise<Result>
++  }
+   ref: {
+     locations(): Promise<Location[]>
+   }
+diff --git a/src/shared/domain/vrac.test.ts b/src/shared/domain/vrac.test.ts
+index a6f2715..3379b13 100644
+--- a/src/shared/domain/vrac.test.ts
++++ b/src/shared/domain/vrac.test.ts
+@@ -1,5 +1,15 @@
+ import { describe, expect, it } from 'vitest'
+-import { BL_MATCH_TOLERANCE_KG, buildVracLine, canBeVrac, compareBlToNet, isBlPending } from './vrac'
++import type { VracRotation } from '../types'
++import {
++  BL_MATCH_TOLERANCE_KG,
++  buildVracLine,
++  canBeVrac,
++  closeBlocker,
++  compareBlToNet,
++  isBlPending,
++  isGroupBlPending,
++  summarizeVracGroup
++} from './vrac'
+ 
+ describe('canBeVrac', () => {
+   it('seule une sortie ordinaire peut être du vrac', () => {
+@@ -82,3 +92,112 @@ describe('compareBlToNet', () => {
+     expect(compareBlToNet(28350, null)).toEqual({ kind: 'unknown' })
+   })
+ })
++
++
++const rotation = (over: Partial<VracRotation> = {}): VracRotation => ({
++  operationId: 1,
++  ticketNo: 'S-2026-000010',
++  plate: '12345-116-16',
++  status: 'FERMEE',
++  productCode: 'Maïs vrac',
++  grossWeight: 34150,
++  tareWeight: 8400,
++  netWeight: 25750,
++  weighed: true,
++  partnerName: null,
++  blNo: null,
++  blDate: null,
++  createdAt: '2026-10-21 08:00:00',
++  ...over
++})
++
++const head = { id: 5, status: 'OUVERT' as const, createdAt: '2026-10-21 08:00:00', closedAt: null }
++
++describe('summarizeVracGroup', () => {
++  it('additionne les nets des 4 rotations : un seul total pour un seul BL', () => {
++    const group = summarizeVracGroup(head, [
++      rotation({ operationId: 1, ticketNo: 'S-2026-000010', netWeight: 25750 }),
++      rotation({ operationId: 2, ticketNo: 'S-2026-000011', netWeight: 26100 }),
++      rotation({ operationId: 3, ticketNo: 'S-2026-000012', netWeight: 25900.5 }),
++      rotation({ operationId: 4, ticketNo: 'S-2026-000013', netWeight: 26250 })
++    ])
++
++    expect(group.totalNetKg).toBe(104000.5)
++    expect(group.weighedCount).toBe(4)
++    expect(group.awaitingCount).toBe(0)
++    expect(group.reference).toBe('S-2026-000010')
++    expect(group.products).toEqual([{ productCode: 'Maïs vrac', quantityKg: 104000.5 }])
++  })
++
++  it("ne compte ni les rotations annulées ni celles qui n'ont pas de 2e pesée", () => {
++    const group = summarizeVracGroup(head, [
++      rotation({ operationId: 1, netWeight: 25750 }),
++      rotation({ operationId: 2, status: 'ANNULEE', netWeight: 9999 }),
++      rotation({ operationId: 3, status: 'OUVERTE', weighed: false, netWeight: null })
++    ])
++
++    expect(group.totalNetKg).toBe(25750)
++    expect(group.weighedCount).toBe(1)
++    expect(group.awaitingCount).toBe(1)
++  })
++
++  it('totalise par produit quand le client en prend plusieurs', () => {
++    const group = summarizeVracGroup(head, [
++      rotation({ operationId: 1, productCode: 'Maïs', netWeight: 20000 }),
++      rotation({ operationId: 2, productCode: 'Son', netWeight: 5000 }),
++      rotation({ operationId: 3, productCode: 'Maïs', netWeight: 22000 })
++    ])
++    expect(group.products).toEqual([
++      { productCode: 'Maïs', quantityKg: 42000 },
++      { productCode: 'Son', quantityKg: 5000 }
++    ])
++  })
++
++  it('reprend le client et le BL de la première rotation qui les porte', () => {
++    const group = summarizeVracGroup(head, [
++      rotation({ operationId: 1 }),
++      rotation({ operationId: 2, partnerName: 'HANGAR AIN NOUISSY', blNo: 'BL26-05255', blDate: '2026-10-22' })
++    ])
++    expect(group).toMatchObject({
++      partnerName: 'HANGAR AIN NOUISSY',
++      blNo: 'BL26-05255',
++      blDate: '2026-10-22'
++    })
++  })
++
++  it("un enlèvement sans rotation a un total nul et se nomme par son id", () => {
++    const group = summarizeVracGroup(head, [])
++    expect(group).toMatchObject({ totalNetKg: 0, weighedCount: 0, reference: '#5' })
++  })
++})
++
++describe('closeBlocker', () => {
++  const group = (over = {}, rotations = [rotation()]) =>
++    ({ ...summarizeVracGroup(head, rotations), ...over })
++
++  it('autorise la clôture quand toutes les rotations sont pesées', () => {
++    expect(closeBlocker(group())).toBeNull()
++  })
++
++  it('refuse sans rotation pesée', () => {
++    expect(closeBlocker(group({}, []))).toBe('NO_ROTATION')
++  })
++
++  it("refuse tant qu'un camion n'est pas revenu à la 2e balance", () => {
++    expect(
++      closeBlocker(group({}, [rotation(), rotation({ operationId: 2, weighed: false, netWeight: null, status: 'OUVERTE' })]))
++    ).toBe('AWAITING_SECOND')
++  })
++
++  it('refuse un enlèvement déjà clos', () => {
++    expect(closeBlocker(group({ status: 'CLOS' }))).toBe('ALREADY_CLOSED')
++  })
++})
++
++describe('isGroupBlPending', () => {
++  it('attend son BL tant que le commercial ne l’a pas établi', () => {
++    expect(isGroupBlPending(summarizeVracGroup(head, [rotation()]))).toBe(true)
++    expect(isGroupBlPending(summarizeVracGroup(head, [rotation({ blNo: 'BL26-05255' })]))).toBe(false)
++    expect(isGroupBlPending(summarizeVracGroup(head, []))).toBe(false)
++  })
++})
+diff --git a/src/shared/domain/vrac.ts b/src/shared/domain/vrac.ts
+index e630e57..0bfc62b 100644
+--- a/src/shared/domain/vrac.ts
++++ b/src/shared/domain/vrac.ts
+@@ -4,7 +4,13 @@
+  * Fonctions pures (ni Electron ni MySQL) : le dépôt les applique, l'écran les
+  * utilise pour décider quoi afficher.
+  */
+-import type { OperationType, ProductLine } from '../types'
++import type {
++  OperationType,
++  ProductLine,
++  VracGroup,
++  VracGroupStatus,
++  VracRotation
++} from '../types'
+ import { roundKg } from './weighing'
+ 
+ /** Seule une vraie sortie peut être du vrac : ni entrée, ni transfert, ni retour. */
+@@ -67,3 +73,64 @@ export function compareBlToNet(blWeightKg: number | null, netKg: number | null):
+     diffKg
+   }
+ }
++
++// ---------------------------------------------------------------------------
++// Enlèvement vrac : plusieurs rotations, un seul BL
++// ---------------------------------------------------------------------------
++
++/**
++ * Regroupe les rotations d'un enlèvement et en tire le total. Une rotation annulée
++ * ne compte pas ; une rotation non pesée deux fois n'a pas encore de net.
++ */
++export function summarizeVracGroup(
++  head: { id: number; status: VracGroupStatus; createdAt: string; closedAt: string | null },
++  rotations: VracRotation[]
++): VracGroup {
++  const active = rotations.filter((r) => r.status !== 'ANNULEE')
++  const weighed = active.filter((r) => r.weighed && r.netWeight != null)
++
++  const byProduct = new Map<string, number>()
++  for (const rotation of weighed) {
++    const product = rotation.productCode?.trim()
++    if (!product) continue
++    byProduct.set(product, roundKg((byProduct.get(product) ?? 0) + (rotation.netWeight ?? 0)))
++  }
++
++  const first = (pick: (r: VracRotation) => string | null): string | null =>
++    active.map(pick).find((value) => value != null && value.trim() !== '') ?? null
++
++  return {
++    id: head.id,
++    reference: (active[0] ?? rotations[0])?.ticketNo ?? `#${head.id}`,
++    status: head.status,
++    createdAt: head.createdAt,
++    closedAt: head.closedAt,
++    partnerName: first((r) => r.partnerName),
++    blNo: first((r) => r.blNo),
++    blDate: first((r) => r.blDate),
++    rotations,
++    totalNetKg: roundKg(weighed.reduce((sum, r) => sum + (r.netWeight ?? 0), 0)),
++    weighedCount: weighed.length,
++    awaitingCount: active.filter((r) => !r.weighed).length,
++    products: [...byProduct].map(([productCode, quantityKg]) => ({ productCode, quantityKg }))
++  }
++}
++
++export type CloseBlocker = 'ALREADY_CLOSED' | 'NO_ROTATION' | 'AWAITING_SECOND'
++
++/**
++ * Peut-on clôturer l'enlèvement ? Non s'il l'est déjà, s'il n'a aucune rotation
++ * pesée (rien à facturer), ou si un camion est encore parti charger : sa 2e pesée
++ * manquerait au total remis au commercial.
++ */
++export function closeBlocker(group: VracGroup): CloseBlocker | null {
++  if (group.status === 'CLOS') return 'ALREADY_CLOSED'
++  if (group.weighedCount === 0) return 'NO_ROTATION'
++  if (group.awaitingCount > 0) return 'AWAITING_SECOND'
++  return null
++}
++
++/** Enlèvement pesé dont le BL n'est pas encore établi par le commercial. */
++export function isGroupBlPending(group: VracGroup): boolean {
++  return group.weighedCount > 0 && !group.blNo?.trim()
++}
+diff --git a/src/shared/schemas.test.ts b/src/shared/schemas.test.ts
+index 975d670..e251a11 100644
+--- a/src/shared/schemas.test.ts
++++ b/src/shared/schemas.test.ts
+@@ -5,7 +5,9 @@ import {
+   captureSchema,
+   opFilterSchema,
+   opUpdateSchema,
+-  ticketDraftSchema
++  ticketDraftSchema,
++  vracGroupFilterSchema,
++  vracLinkBlSchema
+ } from './schemas'
+ 
+ describe('blLookupSchema', () => {
+@@ -75,3 +77,28 @@ describe('vrac', () => {
+     expect(result.success).toBe(false)
+   })
+ })
++
++describe('enlèvement vrac', () => {
++  it('une rotation peut désigner l’enlèvement à rejoindre', () => {
++    expect(ticketDraftSchema.parse({ type: 'SORTIE', isVrac: true, vracGroupId: 7 }).vracGroupId).toBe(7)
++    expect(ticketDraftSchema.parse({ type: 'SORTIE', isVrac: true, vracGroupId: null }).vracGroupId).toBeNull()
++    expect(ticketDraftSchema.safeParse({ type: 'SORTIE', vracGroupId: 0 }).success).toBe(false)
++  })
++
++  it('valide le BL à rattacher', () => {
++    expect(vracLinkBlSchema.parse({ id: 1, blNo: ' BL26-05255 ', blDate: '2026-10-22' })).toMatchObject({
++      blNo: 'BL26-05255',
++      blDate: '2026-10-22'
++    })
++    expect(vracLinkBlSchema.safeParse({ id: 1, blNo: '  ' }).success).toBe(false)
++    expect(vracLinkBlSchema.safeParse({ id: 1, blNo: 'BL1', blDate: '22/10/2026' }).success).toBe(false)
++  })
++
++  it('filtre les enlèvements par statut', () => {
++    expect(vracGroupFilterSchema.parse({ status: 'OUVERT', blPending: true })).toEqual({
++      status: 'OUVERT',
++      blPending: true
++    })
++    expect(vracGroupFilterSchema.safeParse({ status: 'AUTRE' }).success).toBe(false)
++  })
++})
+diff --git a/src/shared/schemas.ts b/src/shared/schemas.ts
+index db454c5..f3ae534 100644
+--- a/src/shared/schemas.ts
++++ b/src/shared/schemas.ts
+@@ -84,6 +84,7 @@ export const ticketDraftSchema = z.object({
+   type: z.enum(OPERATION_TYPES),
+   isRetour: z.boolean().optional(),
+   isVrac: z.boolean().optional(),
++  vracGroupId: z.number().int().positive().nullish(),
+   plate: z.string().trim().max(32).nullish(),
+   driverName: z.string().trim().max(128).nullish(),
+   partnerId: z.number().int().positive().nullish(),
+@@ -166,6 +167,24 @@ export const opUpdateSchema = z.object({
+   })
+ })
+ 
++export const vracGroupFilterSchema = z.object({
++  status: z.enum(['OUVERT', 'CLOS']).nullish(),
++  blPending: z.boolean().optional(),
++  search: z.string().trim().max(80).nullish()
++})
++
++export const vracIdSchema = z.object({ id: z.number().int().positive() })
++
++export const vracLinkBlSchema = z.object({
++  id: z.number().int().positive(),
++  blNo: z.string().trim().min(1).max(64),
++  blDate: z
++    .string()
++    .regex(/^\d{4}-\d{2}-\d{2}$/)
++    .nullish(),
++  partnerName: z.string().trim().max(160).nullish()
++})
++
+ export const langSchema = z.object({
+   id: z.number().int().positive(),
+   lang: z.enum(['fr', 'ar'])
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 1aac442..da45fc0 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -70,6 +70,11 @@ export interface TicketDraft {
+    * pesée. Le poids net devient la quantité ; le commercial établit ensuite le BL.
+    */
+   isVrac?: boolean
++  /**
++   * Vrac : enlèvement (OUVERT) auquel rattacher cette rotation. Absent = nouvel
++   * enlèvement. Plusieurs rotations d'un même client partagent un seul BL.
++   */
++  vracGroupId?: number | null
+   plate?: string | null
+   driverName?: string | null
+   partnerId?: number | null
+@@ -99,6 +104,7 @@ export interface Operation extends TicketDraft {
+   status: OperationStatus
+   isRetour: boolean
+   isVrac: boolean
++  vracGroupId: number | null
+   first: Weighing | null
+   second: Weighing | null
+   /** Somme des lignes, figée à la 2e pesée. */
+@@ -123,3 +129,52 @@ export interface WeightSample {
+   raw: string
+   at: string
+ }
++
++export type VracGroupStatus = 'OUVERT' | 'CLOS'
++
++/** Une rotation d'un enlèvement vrac : un ticket, un aller-retour sur la balance. */
++export interface VracRotation {
++  operationId: number
++  ticketNo: string
++  plate: string | null
++  status: OperationStatus
++  productCode: string | null
++  grossWeight: number | null
++  tareWeight: number | null
++  netWeight: number | null
++  /** 2e pesée faite : le net est connu. */
++  weighed: boolean
++  partnerName: string | null
++  blNo: string | null
++  blDate: string | null
++  createdAt: string
++}
++
++export interface VracProductTotal {
++  productCode: string
++  quantityKg: number
++}
++
++/**
++ * Un enlèvement vrac : toutes les rotations d'un client, sommées pour établir un
++ * seul BL. Le total est calculé, jamais stocké.
++ */
++export interface VracGroup {
++  id: number
++  /** Numéro du ticket de la 1re rotation : c'est ainsi que l'opérateur le nomme. */
++  reference: string
++  status: VracGroupStatus
++  createdAt: string
++  closedAt: string | null
++  partnerName: string | null
++  blNo: string | null
++  blDate: string | null
++  rotations: VracRotation[]
++  /** Somme des nets des rotations pesées et non annulées. */
++  totalNetKg: number
++  weighedCount: number
++  /** Rotations commencées dont la 2e pesée manque. */
++  awaitingCount: number
++  /** Totaux par produit (un BL a une ligne par produit). */
++  products: VracProductTotal[]
++}
+-- 
+2.43.0
+

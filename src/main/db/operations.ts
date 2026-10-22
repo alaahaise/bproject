@@ -18,6 +18,7 @@ import type {
   OpUpdate
 } from '@shared/channels'
 import { CENTRAL_LOCATION_CODE, resolveLocations } from '@shared/domain/locations'
+import { allowsBl } from '@shared/domain/operation-fields'
 import { pageWindow } from '@shared/domain/paging'
 import { containsPattern, searchKey } from '@shared/domain/search'
 import { buildVracLine, canBeVrac } from '@shared/domain/vrac'
@@ -172,8 +173,8 @@ export async function create(draft: TicketDraft, user: SessionUser): Promise<Ope
         draft.partnerName?.trim() || null,
         places.fromId,
         places.toId,
-        draft.blNo?.trim() || null,
-        draft.blDate?.trim() || null,
+        allowsBl(draft.type, isRetour) ? draft.blNo?.trim() || null : null,
+        allowsBl(draft.type, isRetour) ? draft.blDate?.trim() || null : null,
         draft.notes?.trim() || null,
         user.id
       ]
@@ -380,20 +381,34 @@ export async function capture(
 }
 
 export async function cancel(id: number, reason: string, user: SessionUser): Promise<void> {
-  const pool = getPool()
-  const [result] = await pool.query<ResultSetHeader>(
-    `UPDATE operations
-        SET status = 'ANNULEE', cancel_reason = ?, cancelled_by = ?, cancelled_at = NOW()
-      WHERE id = ? AND status <> 'ANNULEE'`,
-    [reason, user.id, id]
-  )
-  if (result.affectedRows === 0) throw new Error('Ticket introuvable ou déjà annulé')
-
-  await pool.query(
-    `INSERT INTO audit_log (user_id, action, entity, entity_id, after_json)
-     VALUES (?,?,?,?,?)`,
-    [user.id, 'CANCEL', 'operations', String(id), JSON.stringify({ reason })]
-  )
+  const conn = await getPool().getConnection()
+  try {
+    await conn.beginTransaction()
+    const [rows] = await conn.query<RowDataPacket[]>(
+      'SELECT status FROM operations WHERE id = ? FOR UPDATE',
+      [id]
+    )
+    if (!rows[0] || rows[0].status === 'ANNULEE') {
+      throw new Error('Ticket introuvable ou déjà annulé')
+    }
+    await conn.query(
+      `UPDATE operations
+          SET status = 'ANNULEE', cancel_reason = ?, cancelled_by = ?, cancelled_at = NOW()
+        WHERE id = ?`,
+      [reason, user.id, id]
+    )
+    await conn.query(
+      `INSERT INTO audit_log (user_id, action, entity, entity_id, after_json)
+       VALUES (?,?,?,?,?)`,
+      [user.id, 'CANCEL', 'operations', String(id), JSON.stringify({ reason })]
+    )
+    await conn.commit()
+  } catch (err) {
+    await conn.rollback().catch(() => undefined)
+    throw err
+  } finally {
+    conn.release()
+  }
 }
 
 /**
@@ -405,7 +420,7 @@ export async function close(id: number, user: SessionUser): Promise<Operation> {
   try {
     await conn.beginTransaction()
     const [rows] = await conn.query<RowDataPacket[]>(
-      'SELECT status, second_weight FROM operations WHERE id = ? FOR UPDATE',
+      'SELECT status, second_weight, ecart_ok FROM operations WHERE id = ? FOR UPDATE',
       [id]
     )
     const row = rows[0]
@@ -413,6 +428,9 @@ export async function close(id: number, user: SessionUser): Promise<Operation> {
     if (row.status === 'ANNULEE') throw new Error('Ticket annulé : enregistrement impossible')
     if (row.status !== 'FERMEE' && row.second_weight == null) {
       throw new Error('Les deux pesées doivent être faites avant d’enregistrer')
+    }
+    if (row.ecart_ok != null && Number(row.ecart_ok) === 0 && user.role === 'OPERATEUR') {
+      throw new Error('Un superviseur doit valider le ticket hors tolérance')
     }
     if (row.status !== 'FERMEE') {
       await conn.query(`UPDATE operations SET status = 'FERMEE', closed_by = ? WHERE id = ?`, [
@@ -499,6 +517,22 @@ export async function update(id: number, patch: OpUpdate, user: SessionUser): Pr
     )
     const row = rows[0]
     if (!row) throw new Error('Ticket introuvable')
+    if (!allowsBl(row.type as OperationType, Boolean(Number(row.is_retour)))) {
+      await conn.query('UPDATE operations SET bl_no = NULL, bl_date = NULL WHERE id = ?', [id])
+    }
+    if (
+      Boolean(Number(row.is_vrac)) &&
+      (patch.blNo?.trim() ?? '') !== '' &&
+      row.vrac_group_id != null
+    ) {
+      const [groups] = await conn.query<RowDataPacket[]>(
+        'SELECT status FROM vrac_groups WHERE id = ? FOR UPDATE',
+        [row.vrac_group_id]
+      )
+      if (groups[0]?.status !== 'CLOS') {
+        throw new Error('Clôturez l’enlèvement avant de rattacher le BL')
+      }
+    }
     if (
       Boolean(Number(row.is_vrac)) &&
       !canBeVrac(row.type as OperationType, Boolean(Number(row.is_retour)))

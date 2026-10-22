@@ -31,6 +31,7 @@ export const CH = {
   dbMigrate: 'db:migrate',
   appStatus: 'app:status',
   authLogin: 'auth:login',
+  authChangePassword: 'auth:changePassword',
   authLogout: 'auth:logout',
   authCurrent: 'auth:current',
   opsCreate: 'ops:create',
@@ -75,6 +76,13 @@ export interface AppSettings {
   db: DbConfig | null
   balance: BalanceConfig | null
   /** Adresse du service BL (ex. http://127.0.0.1:3100). */
+  blApiUrl: string | null
+}
+
+/** Renderer-safe settings view: database credentials never cross the IPC bridge. */
+export interface AppSettingsView {
+  db: (Omit<DbConfig, 'password'> & { hasPassword: boolean }) | null
+  balance: BalanceConfig | null
   blApiUrl: string | null
 }
 
@@ -200,7 +208,7 @@ export type Lang = 'fr' | 'ar'
 /** Surface exposée au renderer via `window.api`. */
 export interface AppApi {
   settings: {
-    get(): Promise<AppSettings>
+    get(): Promise<AppSettingsView>
     saveDb(cfg: DbConfig): Promise<Result>
     saveBalance(cfg: BalanceConfig): Promise<Result>
     /** Nom de la société, en base : il est imprimé en tête du ticket. */
@@ -219,6 +227,7 @@ export interface AppApi {
   }
   auth: {
     login(username: string, password: string): Promise<SessionUser>
+    changePassword(currentPassword: string, newPassword: string): Promise<void>
     logout(): Promise<void>
     current(): Promise<SessionUser | null>
   }

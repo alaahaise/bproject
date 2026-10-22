@@ -265,6 +265,9 @@ export async function linkBl(input: VracLinkBlInput, user: SessionUser): Promise
     await conn.query('SELECT id FROM vrac_groups WHERE id = ? FOR UPDATE', [input.id])
     const group = await requireGroup(input.id)
     if (group.weighedCount === 0) throw new Error('Aucune rotation pesée : pas de BL à rattacher')
+    if (group.status !== 'CLOS') {
+      throw new Error('Clôturez l’enlèvement avant de rattacher le BL')
+    }
 
     await conn.query(
       `UPDATE operations SET bl_no = ?, bl_date = ?
