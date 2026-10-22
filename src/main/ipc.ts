@@ -24,7 +24,10 @@ import {
   opPageSchema,
   opUpdateSchema,
   simWeightSchema,
-  ticketDraftSchema
+  ticketDraftSchema,
+  vracGroupFilterSchema,
+  vracIdSchema,
+  vracLinkBlSchema
 } from '@shared/schemas'
 import type { SessionUser } from '@shared/types'
 import * as auth from './auth'
@@ -37,6 +40,8 @@ import { printHtml } from './printer'
 import { balance, listPorts } from './serial/service'
 import { loadSettings, saveSettings } from './settings'
 import { buildTicketHtml } from './ticket-html'
+import * as vracGroups from './db/vrac-groups'
+import { buildVracGroupHtml } from './vrac-html'
 
 let session: SessionUser | null = null
 
@@ -231,6 +236,41 @@ export function registerIpc(): void {
     return { ok: true, message: 'Ticket envoyé à l’imprimante' }
   })
 
+  ipcMain.handle(CH.vracGroups, async (_e, raw) => {
+    requireUser()
+    return vracGroups.listGroups(parse(vracGroupFilterSchema, raw ?? {}))
+  })
+
+  ipcMain.handle(CH.vracGet, async (_e, raw) => {
+    requireUser()
+    return vracGroups.getGroup(parse(vracIdSchema, raw).id)
+  })
+
+  ipcMain.handle(CH.vracClose, async (_e, raw) => {
+    return vracGroups.closeGroup(parse(vracIdSchema, raw).id, requireUser())
+  })
+
+  ipcMain.handle(CH.vracReopen, async (_e, raw) => {
+    return vracGroups.reopenGroup(parse(vracIdSchema, raw).id, requireUser())
+  })
+
+  ipcMain.handle(CH.vracLinkBl, async (_e, raw) => {
+    return vracGroups.linkBl(parse(vracLinkBlSchema, raw), requireUser())
+  })
+
+  ipcMain.handle(CH.vracHtml, async (_e, raw): Promise<string> => {
+    requireUser()
+    const { id, lang } = parse(langSchema, raw)
+    return vracGroupHtml(id, lang)
+  })
+
+  ipcMain.handle(CH.vracPrint, async (_e, raw): Promise<Result> => {
+    requireUser()
+    const { id, lang } = parse(langSchema, raw)
+    await printHtml(await vracGroupHtml(id, lang))
+    return { ok: true, message: 'Récapitulatif envoyé à l’imprimante' }
+  })
+
   ipcMain.handle(CH.refLocations, async () => {
     requireUser()
     return operations.listLocations()
@@ -282,6 +322,13 @@ async function ticketHtml(id: number, lang: 'fr' | 'ar'): Promise<string> {
     operations.listLocations()
   ])
   return buildTicketHtml(operation, { company: company ?? 'Société', locations, lang })
+}
+
+async function vracGroupHtml(id: number, lang: 'fr' | 'ar'): Promise<string> {
+  const group = await vracGroups.getGroup(id)
+  if (!group) throw new Error('Enlèvement introuvable')
+  const company = await operations.getSetting('company_name')
+  return buildVracGroupHtml(group, { company: company ?? 'Société', lang })
 }
 
 async function appStatus(): Promise<AppStatus> {

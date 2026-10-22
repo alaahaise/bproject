@@ -156,7 +156,10 @@ export default function Operations({ type }: { type: OperationType }) {
           : current
       )
 
-      const check = compareBlToNet(lookup.totalWeightKg, row.netWeight)
+      // Un vrac est facturé sur le total de son enlèvement (toutes les rotations),
+      // pas sur le net de ce seul ticket.
+      const group = row.vracGroupId != null ? await call(api.vrac.get(row.vracGroupId)) : null
+      const check = compareBlToNet(lookup.totalWeightKg, group ? group.totalNetKg : row.netWeight)
       if (check.kind === 'unknown') {
         setBlNotice({ kind: 'warn', text: t('ops.blCheck.unknown', { reference: lookup.reference }) })
       } else {

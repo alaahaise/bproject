@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { BL_MATCH_TOLERANCE_KG, buildVracLine, canBeVrac, compareBlToNet, isBlPending } from './vrac'
+import type { VracRotation } from '../types'
+import {
+  BL_MATCH_TOLERANCE_KG,
+  buildVracLine,
+  canBeVrac,
+  closeBlocker,
+  compareBlToNet,
+  isBlPending,
+  isGroupBlPending,
+  summarizeVracGroup
+} from './vrac'
 
 describe('canBeVrac', () => {
   it('seule une sortie ordinaire peut être du vrac', () => {
@@ -80,5 +90,114 @@ describe('compareBlToNet', () => {
   it('ne juge pas quand un poids manque (BL sans poids connu)', () => {
     expect(compareBlToNet(null, 28350)).toEqual({ kind: 'unknown' })
     expect(compareBlToNet(28350, null)).toEqual({ kind: 'unknown' })
+  })
+})
+
+
+const rotation = (over: Partial<VracRotation> = {}): VracRotation => ({
+  operationId: 1,
+  ticketNo: 'S-2026-000010',
+  plate: '12345-116-16',
+  status: 'FERMEE',
+  productCode: 'Maïs vrac',
+  grossWeight: 34150,
+  tareWeight: 8400,
+  netWeight: 25750,
+  weighed: true,
+  partnerName: null,
+  blNo: null,
+  blDate: null,
+  createdAt: '2026-10-21 08:00:00',
+  ...over
+})
+
+const head = { id: 5, status: 'OUVERT' as const, createdAt: '2026-10-21 08:00:00', closedAt: null }
+
+describe('summarizeVracGroup', () => {
+  it('additionne les nets des 4 rotations : un seul total pour un seul BL', () => {
+    const group = summarizeVracGroup(head, [
+      rotation({ operationId: 1, ticketNo: 'S-2026-000010', netWeight: 25750 }),
+      rotation({ operationId: 2, ticketNo: 'S-2026-000011', netWeight: 26100 }),
+      rotation({ operationId: 3, ticketNo: 'S-2026-000012', netWeight: 25900.5 }),
+      rotation({ operationId: 4, ticketNo: 'S-2026-000013', netWeight: 26250 })
+    ])
+
+    expect(group.totalNetKg).toBe(104000.5)
+    expect(group.weighedCount).toBe(4)
+    expect(group.awaitingCount).toBe(0)
+    expect(group.reference).toBe('S-2026-000010')
+    expect(group.products).toEqual([{ productCode: 'Maïs vrac', quantityKg: 104000.5 }])
+  })
+
+  it("ne compte ni les rotations annulées ni celles qui n'ont pas de 2e pesée", () => {
+    const group = summarizeVracGroup(head, [
+      rotation({ operationId: 1, netWeight: 25750 }),
+      rotation({ operationId: 2, status: 'ANNULEE', netWeight: 9999 }),
+      rotation({ operationId: 3, status: 'OUVERTE', weighed: false, netWeight: null })
+    ])
+
+    expect(group.totalNetKg).toBe(25750)
+    expect(group.weighedCount).toBe(1)
+    expect(group.awaitingCount).toBe(1)
+  })
+
+  it('totalise par produit quand le client en prend plusieurs', () => {
+    const group = summarizeVracGroup(head, [
+      rotation({ operationId: 1, productCode: 'Maïs', netWeight: 20000 }),
+      rotation({ operationId: 2, productCode: 'Son', netWeight: 5000 }),
+      rotation({ operationId: 3, productCode: 'Maïs', netWeight: 22000 })
+    ])
+    expect(group.products).toEqual([
+      { productCode: 'Maïs', quantityKg: 42000 },
+      { productCode: 'Son', quantityKg: 5000 }
+    ])
+  })
+
+  it('reprend le client et le BL de la première rotation qui les porte', () => {
+    const group = summarizeVracGroup(head, [
+      rotation({ operationId: 1 }),
+      rotation({ operationId: 2, partnerName: 'HANGAR AIN NOUISSY', blNo: 'BL26-05255', blDate: '2026-10-22' })
+    ])
+    expect(group).toMatchObject({
+      partnerName: 'HANGAR AIN NOUISSY',
+      blNo: 'BL26-05255',
+      blDate: '2026-10-22'
+    })
+  })
+
+  it("un enlèvement sans rotation a un total nul et se nomme par son id", () => {
+    const group = summarizeVracGroup(head, [])
+    expect(group).toMatchObject({ totalNetKg: 0, weighedCount: 0, reference: '#5' })
+  })
+})
+
+describe('closeBlocker', () => {
+  const group = (over = {}, rotations = [rotation()]) =>
+    ({ ...summarizeVracGroup(head, rotations), ...over })
+
+  it('autorise la clôture quand toutes les rotations sont pesées', () => {
+    expect(closeBlocker(group())).toBeNull()
+  })
+
+  it('refuse sans rotation pesée', () => {
+    expect(closeBlocker(group({}, []))).toBe('NO_ROTATION')
+  })
+
+  it("refuse tant qu'un camion n'est pas revenu à la 2e balance", () => {
+    expect(
+      closeBlocker(group({}, [rotation(), rotation({ operationId: 2, weighed: false, netWeight: null, status: 'OUVERTE' })]))
+    ).toBe('AWAITING_SECOND')
+  })
+
+  it('refuse un enlèvement déjà clos', () => {
+    expect(closeBlocker(group({ status: 'CLOS' }))).toBe('ALREADY_CLOSED')
+  })
+})
+
+describe('isGroupBlPending', () => {
+  it('attend son BL tant que le commercial ne l’a pas établi', () => {
+    expect(isGroupBlPending(summarizeVracGroup(head, [rotation()]))).toBe(true)
+    expect(isGroupBlPending(summarizeVracGroup(head, [rotation({ blNo: 'BL26-05255' })]))).toBe(false)
+    expect(isGroupBlPending(summarizeVracGroup(head, []))).toBe(false)
   })
 })

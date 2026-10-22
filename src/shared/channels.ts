@@ -14,7 +14,9 @@ import type {
   ProductLine,
   SessionUser,
   TicketDraft,
-  WeightSample
+  WeightSample,
+  VracGroup,
+  VracGroupStatus
 } from './types'
 
 export const CH = {
@@ -42,6 +44,13 @@ export const CH = {
   opsSetLines: 'ops:setLines',
   opsHtml: 'ops:html',
   opsPrint: 'ops:print',
+  vracGroups: 'vrac:groups',
+  vracGet: 'vrac:get',
+  vracClose: 'vrac:close',
+  vracReopen: 'vrac:reopen',
+  vracLinkBl: 'vrac:linkBl',
+  vracHtml: 'vrac:html',
+  vracPrint: 'vrac:print',
   refLocations: 'ref:locations',
   blLookup: 'bl:lookup',
   balanceStart: 'balance:start',
@@ -171,6 +180,21 @@ export interface OpUpdate {
   notes?: string | null
 }
 
+export interface VracGroupFilter {
+  status?: VracGroupStatus | null
+  /** Enlèvements pesés dont le BL n'est pas encore établi. */
+  blPending?: boolean
+  search?: string | null
+}
+
+export interface VracLinkBlInput {
+  id: number
+  blNo: string
+  blDate?: string | null
+  /** Repris du BL HFSQL ; ne remplace jamais un client déjà saisi. */
+  partnerName?: string | null
+}
+
 export type Lang = 'fr' | 'ar'
 
 /** Surface exposée au renderer via `window.api`. */
@@ -213,6 +237,19 @@ export interface AppApi {
     /** Remplace la liste des produits. Refusé après la 2e pesée. */
     setLines(id: number, lines: ProductLine[]): Promise<Operation>
     /** Ticket imprimable, aussi utilisé pour l'aperçu à l'écran. */
+    html(id: number, lang: Lang): Promise<string>
+    print(id: number, lang: Lang): Promise<Result>
+  }
+  /** Enlèvements vrac : plusieurs rotations sommées pour un seul BL. */
+  vrac: {
+    groups(filter: VracGroupFilter): Promise<VracGroup[]>
+    get(id: number): Promise<VracGroup | null>
+    /** Plus aucune rotation à venir : le total est remis au commercial. */
+    close(id: number): Promise<VracGroup>
+    /** Rouvre un enlèvement clos par erreur (refusé une fois le BL renseigné). */
+    reopen(id: number): Promise<VracGroup>
+    /** Enregistre le BL établi par le commercial sur toutes les rotations. */
+    linkBl(input: VracLinkBlInput): Promise<VracGroup>
     html(id: number, lang: Lang): Promise<string>
     print(id: number, lang: Lang): Promise<Result>
   }

@@ -5,7 +5,9 @@ import {
   captureSchema,
   opFilterSchema,
   opUpdateSchema,
-  ticketDraftSchema
+  ticketDraftSchema,
+  vracGroupFilterSchema,
+  vracLinkBlSchema
 } from './schemas'
 
 describe('blLookupSchema', () => {
@@ -73,5 +75,30 @@ describe('vrac', () => {
       lines: [{ productCode: 'CMV', quantityKg: 0 }]
     })
     expect(result.success).toBe(false)
+  })
+})
+
+describe('enlèvement vrac', () => {
+  it('une rotation peut désigner l’enlèvement à rejoindre', () => {
+    expect(ticketDraftSchema.parse({ type: 'SORTIE', isVrac: true, vracGroupId: 7 }).vracGroupId).toBe(7)
+    expect(ticketDraftSchema.parse({ type: 'SORTIE', isVrac: true, vracGroupId: null }).vracGroupId).toBeNull()
+    expect(ticketDraftSchema.safeParse({ type: 'SORTIE', vracGroupId: 0 }).success).toBe(false)
+  })
+
+  it('valide le BL à rattacher', () => {
+    expect(vracLinkBlSchema.parse({ id: 1, blNo: ' BL26-05255 ', blDate: '2026-10-22' })).toMatchObject({
+      blNo: 'BL26-05255',
+      blDate: '2026-10-22'
+    })
+    expect(vracLinkBlSchema.safeParse({ id: 1, blNo: '  ' }).success).toBe(false)
+    expect(vracLinkBlSchema.safeParse({ id: 1, blNo: 'BL1', blDate: '22/10/2026' }).success).toBe(false)
+  })
+
+  it('filtre les enlèvements par statut', () => {
+    expect(vracGroupFilterSchema.parse({ status: 'OUVERT', blPending: true })).toEqual({
+      status: 'OUVERT',
+      blPending: true
+    })
+    expect(vracGroupFilterSchema.safeParse({ status: 'AUTRE' }).success).toBe(false)
   })
 })

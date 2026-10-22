@@ -31,6 +31,8 @@ import type {
   Weighing
 } from '@shared/types'
 import { getPool } from './pool'
+import { stripped } from './search-sql'
+import { assignGroup, dropGroupIfEmpty, shareBlInGroup } from './vrac-groups'
 
 const VRAC_ONLY_SORTIE = 'Le vrac concerne uniquement les sorties (hors retour)'
 const TOLERANCE_KEY = 'ecart_tolerance_kg'
@@ -146,17 +148,22 @@ export async function create(draft: TicketDraft, user: SessionUser): Promise<Ope
       centralId: await centralLocationId(conn)
     })
 
+    // Chaque rotation vrac appartient à un enlèvement : celui qu'on lui désigne
+    // (la 2e, 3e… rotation du même client) ou un nouveau.
+    const vracGroupId = isVrac ? await assignGroup(conn, draft.vracGroupId) : null
+
     const [result] = await conn.query<ResultSetHeader>(
       `INSERT INTO operations
-         (ticket_no, type, is_retour, is_vrac, status, vehicle_id, plate, driver_name,
+         (ticket_no, type, is_retour, is_vrac, vrac_group_id, status, vehicle_id, plate, driver_name,
           partner_id, partner_name, location_from_id, location_to_id, bl_no, bl_date,
           notes, operator_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         ticketNo,
         draft.type,
         isRetour ? 1 : 0,
         isVrac ? 1 : 0,
+        vracGroupId,
         'OUVERTE',
         vehicleId,
         draft.plate?.trim().toUpperCase() || null,
@@ -486,7 +493,8 @@ export async function update(id: number, patch: OpUpdate, user: SessionUser): Pr
     // envoyer un lieu que ce type ne demande pas) ne doit pas laisser le stock
     // pointer sur un lieu incohérent.
     const [rows] = await conn.query<RowDataPacket[]>(
-      'SELECT type, is_retour, is_vrac, location_from_id, location_to_id FROM operations WHERE id = ?',
+      `SELECT type, is_retour, is_vrac, vrac_group_id, bl_no, bl_date, location_from_id, location_to_id
+         FROM operations WHERE id = ?`,
       [id]
     )
     const row = rows[0]
@@ -508,6 +516,21 @@ export async function update(id: number, patch: OpUpdate, user: SessionUser): Pr
       'UPDATE operations SET location_from_id = ?, location_to_id = ? WHERE id = ?',
       [places.fromId, places.toId, id]
     )
+
+    // Un ticket vrac appartient toujours à un enlèvement ; un ticket qui cesse
+    // d'être vrac le quitte (et l'enlèvement disparaît s'il reste vide).
+    const isVrac = Boolean(Number(row.is_vrac))
+    const currentGroup = row.vrac_group_id == null ? null : Number(row.vrac_group_id)
+    if (isVrac && currentGroup === null) {
+      const groupId = await assignGroup(conn, null)
+      await conn.query('UPDATE operations SET vrac_group_id = ? WHERE id = ?', [groupId, id])
+    } else if (!isVrac && currentGroup !== null) {
+      await conn.query('UPDATE operations SET vrac_group_id = NULL WHERE id = ?', [id])
+      await dropGroupIfEmpty(conn, currentGroup)
+    } else if (isVrac && currentGroup !== null && ('blNo' in patch || 'blDate' in patch)) {
+      // Un seul BL pour tout l'enlèvement : on l'étend aux autres rotations.
+      await shareBlInGroup(conn, currentGroup, id, row.bl_no ?? null, row.bl_date ?? null)
+    }
 
     await conn.query(
       `INSERT INTO audit_log (user_id, action, entity, entity_id, after_json) VALUES (?,?,?,?,?)`,
@@ -648,10 +671,6 @@ export async function setSetting(key: string, value: string): Promise<void> {
     [key, value]
   )
 }
-
-/** Colonne comparée sans casse, espaces ni tirets (« 12345-116-16 » = « 1234511616 »). */
-const stripped = (column: string): string =>
-  `REPLACE(REPLACE(REPLACE(REPLACE(UPPER(${column}),'-',''),' ',''),'.',''),'/','')`
 
 /**
  * Clause WHERE commune à `list` et `page`. Tout vient de paramètres liés ; les
@@ -855,6 +874,7 @@ function toOperation(row: RowDataPacket): Operation {
     status: row.status,
     isRetour: Boolean(Number(row.is_retour ?? 0)),
     isVrac: Boolean(Number(row.is_vrac ?? 0)),
+    vracGroupId: row.vrac_group_id == null ? null : Number(row.vrac_group_id),
     plate: row.plate ?? null,
     driverName: row.driver_name ?? null,
     partnerId: num(row.partner_id),

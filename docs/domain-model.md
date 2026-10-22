@@ -22,6 +22,8 @@ Terms used by the operations staff, mapped to model names.
 | tare | `tare_weight` | Empty weight |
 | écart | `ecart` | `net_weight - weight_supposed` (signed) |
 | vrac | `is_vrac` | Goods sold by weight, weighed **before** any BL exists; the commercial issues the BL afterwards |
+| enlèvement (vrac group) | `vrac_groups` | All the rotations (tickets) one customer takes; summed into a single total for a single BL |
+| rotation | one vrac ticket | One round trip on the balance: 1st weighing, loading, 2nd weighing → its own net |
 | BL à établir | `is_vrac` ∧ `bl_no` empty | A weighed vrac ticket still waiting for its BL |
 | emplacement de dépose | `location_to_id` | stock central, unité A, unité B, ... |
 
@@ -95,32 +97,40 @@ Rules that matter for a company balance:
 | BL missing, ambiguous number, no weight in HFSQL, HFSQL unreachable | handled | BL service answers 404 / 409 / `weightComplete=false` / 503; manual entry stays possible |
 | **Vrac sortie: weighed before the BL exists** | **handled (007)** | see ADR 008 |
 | Écart outside tolerance | **partly** | flagged (`ecart_ok = 0`, red badge) but nothing *requires* a supervisor to close it, although the role exists |
-| One BL delivered over several truck rotations | **not handled** | each ticket is independent; no remaining-quantity tracking per BL |
+| One BL delivered over several truck rotations (vrac) | **handled (008)** | rotations are grouped in an *enlèvement*; total = sum of nets; one BL for the total |
+| One BL delivered over several rotations, *not* vrac (BL known in advance) | **not handled** | each ticket is checked on its own; no remaining-quantity tracking per BL |
 | Same BL number linked to two tickets | **not handled** | no uniqueness / duplicate warning on `bl_no` |
 | Vrac with two products on one truck | **not handled** | vrac takes exactly one product (the net cannot be split without a BL) |
 | Vrac on an ENTREE (bulk purchase without BL) | **not handled** | `canBeVrac` is SORTIE only, by design until needed |
 | Writing the BL / invoice into HFSQL | **out of scope** | the app reads HFSQL, never writes: the commercial issues BL and invoice in the ERP |
 
-### Vrac (sortie sold by weight)
+### Vrac (sortie sold by weight, several rotations)
 
 A normal SORTIE already has its BL: it is read from HFSQL, gives the products and the
-expected weight, and the balance checks it (écart). Vrac is the opposite order:
+expected weight, and the balance checks it (écart). Vrac is the opposite order, and a
+customer usually takes it in **several rotations** (e.g. 4):
 
-1. **1re balance** — truck arrives, tick **Vrac**; one weighing, ticket created.
-2. The truck is loaded and comes back.
-3. **2e balance** — type only the **product** (no quantity, no BL). The net weight
-   *becomes* the quantity of the single line, so stock leaves the right weight.
-   `weight_supposed`, `ecart` and `ecart_ok` stay empty: there is nothing to judge.
-4. Print the ticket: it carries « VRAC » and « BL à établir par le commercial ». The
-   net weight is what the commercial invoices.
-5. The commercial issues the BL (unit price, total) and the invoice in the ERP.
-6. **Tickets → Modifier**: enter the BL number and press **Vérifier le BL**. The BL is
-   read from HFSQL; its reference, date and client are filled in and its weight is
-   compared to the weighed net (informative, tolerance 1 kg for the quintal rounding).
-   « BL à établir uniquement » lists the vrac tickets still waiting.
+1. **1re balance** — truck arrives, tick **Vrac**. Pick **Nouvel enlèvement** for the
+   customer's first rotation, or the open enlèvement for the next ones (it is proposed
+   automatically when the same plate already has a rotation in exactly one open enlèvement).
+2. The truck loads and comes back.
+3. **2e balance** — type only the **product**. The net weight of *this rotation* becomes
+   its quantity (stock leaves the right weight); no `weight_supposed`, no écart. The
+   screen shows the enlèvement's running total.
+4. The customer comes back for the next rotation: repeat from 1 (same enlèvement).
+5. When the customer is done: **Enlèvements vrac → Clôturer**. It refuses while a
+   rotation still waits for its 2nd weighing (cancel it or finish it). The **récapitulatif**
+   opens: every rotation + the **total net to invoice**. Print it for the commercial.
+6. The commercial issues **one BL** on the total (unit price, total) and the invoice in the
+   ERP — the app never writes to HFSQL.
+7. **Enlèvements vrac → Détails**: type the BL number, **Vérifier le BL** (reads HFSQL,
+   compares the BL weight with the total, informative, tolerance 1 kg), then **Lier le BL**:
+   it is recorded on **all** rotations. Typing the BL on one ticket in *Tickets* does the same.
 
-Rules: SORTIE only, never a retour; one product; net must be > 0; the vrac flag cannot be
-changed after the 2nd weighing (cancel the ticket instead).
+Rules: SORTIE only, never a retour; one product per rotation; each rotation's net must be
+> 0; a rotation joins only an OUVERT enlèvement; a CLOS one can be reopened until a BL is
+linked; the vrac flag cannot change after the 2nd weighing (cancel the ticket); a cancelled
+rotation is excluded from the total. The total is always computed (sum of nets), never stored.
 
 ## 3. Data model (MySQL)
 

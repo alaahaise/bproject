@@ -4,7 +4,13 @@
  * Fonctions pures (ni Electron ni MySQL) : le dépôt les applique, l'écran les
  * utilise pour décider quoi afficher.
  */
-import type { OperationType, ProductLine } from '../types'
+import type {
+  OperationType,
+  ProductLine,
+  VracGroup,
+  VracGroupStatus,
+  VracRotation
+} from '../types'
 import { roundKg } from './weighing'
 
 /** Seule une vraie sortie peut être du vrac : ni entrée, ni transfert, ni retour. */
@@ -66,4 +72,65 @@ export function compareBlToNet(blWeightKg: number | null, netKg: number | null):
     netKg: roundKg(netKg),
     diffKg
   }
+}
+
+// ---------------------------------------------------------------------------
+// Enlèvement vrac : plusieurs rotations, un seul BL
+// ---------------------------------------------------------------------------
+
+/**
+ * Regroupe les rotations d'un enlèvement et en tire le total. Une rotation annulée
+ * ne compte pas ; une rotation non pesée deux fois n'a pas encore de net.
+ */
+export function summarizeVracGroup(
+  head: { id: number; status: VracGroupStatus; createdAt: string; closedAt: string | null },
+  rotations: VracRotation[]
+): VracGroup {
+  const active = rotations.filter((r) => r.status !== 'ANNULEE')
+  const weighed = active.filter((r) => r.weighed && r.netWeight != null)
+
+  const byProduct = new Map<string, number>()
+  for (const rotation of weighed) {
+    const product = rotation.productCode?.trim()
+    if (!product) continue
+    byProduct.set(product, roundKg((byProduct.get(product) ?? 0) + (rotation.netWeight ?? 0)))
+  }
+
+  const first = (pick: (r: VracRotation) => string | null): string | null =>
+    active.map(pick).find((value) => value != null && value.trim() !== '') ?? null
+
+  return {
+    id: head.id,
+    reference: (active[0] ?? rotations[0])?.ticketNo ?? `#${head.id}`,
+    status: head.status,
+    createdAt: head.createdAt,
+    closedAt: head.closedAt,
+    partnerName: first((r) => r.partnerName),
+    blNo: first((r) => r.blNo),
+    blDate: first((r) => r.blDate),
+    rotations,
+    totalNetKg: roundKg(weighed.reduce((sum, r) => sum + (r.netWeight ?? 0), 0)),
+    weighedCount: weighed.length,
+    awaitingCount: active.filter((r) => !r.weighed).length,
+    products: [...byProduct].map(([productCode, quantityKg]) => ({ productCode, quantityKg }))
+  }
+}
+
+export type CloseBlocker = 'ALREADY_CLOSED' | 'NO_ROTATION' | 'AWAITING_SECOND'
+
+/**
+ * Peut-on clôturer l'enlèvement ? Non s'il l'est déjà, s'il n'a aucune rotation
+ * pesée (rien à facturer), ou si un camion est encore parti charger : sa 2e pesée
+ * manquerait au total remis au commercial.
+ */
+export function closeBlocker(group: VracGroup): CloseBlocker | null {
+  if (group.status === 'CLOS') return 'ALREADY_CLOSED'
+  if (group.weighedCount === 0) return 'NO_ROTATION'
+  if (group.awaitingCount > 0) return 'AWAITING_SECOND'
+  return null
+}
+
+/** Enlèvement pesé dont le BL n'est pas encore établi par le commercial. */
+export function isGroupBlPending(group: VracGroup): boolean {
+  return group.weighedCount > 0 && !group.blNo?.trim()
 }

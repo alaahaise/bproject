@@ -84,6 +84,7 @@ export const ticketDraftSchema = z.object({
   type: z.enum(OPERATION_TYPES),
   isRetour: z.boolean().optional(),
   isVrac: z.boolean().optional(),
+  vracGroupId: z.number().int().positive().nullish(),
   plate: z.string().trim().max(32).nullish(),
   driverName: z.string().trim().max(128).nullish(),
   partnerId: z.number().int().positive().nullish(),
@@ -164,6 +165,24 @@ export const opUpdateSchema = z.object({
     locationToId: z.number().int().positive().nullish(),
     notes: z.string().max(2000).nullish()
   })
+})
+
+export const vracGroupFilterSchema = z.object({
+  status: z.enum(['OUVERT', 'CLOS']).nullish(),
+  blPending: z.boolean().optional(),
+  search: z.string().trim().max(80).nullish()
+})
+
+export const vracIdSchema = z.object({ id: z.number().int().positive() })
+
+export const vracLinkBlSchema = z.object({
+  id: z.number().int().positive(),
+  blNo: z.string().trim().min(1).max(64),
+  blDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullish(),
+  partnerName: z.string().trim().max(160).nullish()
 })
 
 export const langSchema = z.object({

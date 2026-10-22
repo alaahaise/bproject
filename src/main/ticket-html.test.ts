@@ -10,6 +10,7 @@ function ticket(over: Partial<Operation> = {}): Operation {
     status: 'FERMEE',
     isRetour: false,
     isVrac: false,
+    vracGroupId: null,
     plate: '12345-A-100',
     driverName: null,
     partnerId: null,

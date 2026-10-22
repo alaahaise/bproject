@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { SessionUser } from '@shared/types'
 import * as auth from '../auth'
 import * as operations from './operations'
+import * as vracGroups from './vrac-groups'
 import * as pool from './pool'
 import { migrate } from './migrate'
 
@@ -806,6 +807,223 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
       const page = await operations.page({ type: 'SORTIE', blPending: true, pageSize: 100 })
       expect(page.rows.map((op) => op.id)).toContain(pending.id)
       expect(page.rows.every((op) => op.isVrac)).toBe(true)
+    })
+  })
+
+  describe('enlèvement vrac : plusieurs rotations, un seul BL', () => {
+    /** Une rotation complète : création (dans l'enlèvement), 1re puis 2e pesée. */
+    const rotate = async (
+      groupId: number | null,
+      first: number,
+      second: number,
+      product = 'Maïs vrac',
+      plate = '12345-116-16'
+    ) => {
+      const ticket = await operations.create(
+        { type: 'SORTIE', isVrac: true, vracGroupId: groupId, plate },
+        user
+      )
+      await operations.capture({ operationId: ticket.id, weight: first, isManual: false }, user, 'p')
+      return operations.capture(
+        { operationId: ticket.id, weight: second, isManual: false, vracProduct: product },
+        user,
+        'p'
+      )
+    }
+
+    it('somme 4 rotations en un seul total, dans un seul enlèvement', async () => {
+      const first = await rotate(null, 8400, 34150)
+      const groupId = first.vracGroupId as number
+      expect(groupId).toBeGreaterThan(0)
+
+      await rotate(groupId, 8400, 34500)
+      await rotate(groupId, 8450, 34350)
+      const last = await rotate(groupId, 8400, 34650)
+      expect(last.vracGroupId).toBe(groupId)
+
+      const group = await vracGroups.getGroup(groupId)
+      expect(group?.rotations).toHaveLength(4)
+      expect(group?.weighedCount).toBe(4)
+      expect(group?.awaitingCount).toBe(0)
+      // 25 750 + 26 100 + 25 900 + 26 250
+      expect(group?.totalNetKg).toBe(104000)
+      expect(group?.products).toEqual([{ productCode: 'Maïs vrac', quantityKg: 104000 }])
+      expect(group?.reference).toBe(first.ticketNo)
+      expect(group?.status).toBe('OUVERT')
+    })
+
+    it('chaque ticket vrac a son enlèvement, même seul', async () => {
+      const a = await rotate(null, 8400, 20400)
+      const b = await rotate(null, 8400, 20400)
+      expect(a.vracGroupId).not.toBeNull()
+      expect(a.vracGroupId).not.toBe(b.vracGroupId)
+    })
+
+    it('refuse de rejoindre un enlèvement inconnu ou clos', async () => {
+      await expect(
+        operations.create({ type: 'SORTIE', isVrac: true, vracGroupId: 999999 }, user)
+      ).rejects.toThrow(/introuvable/i)
+
+      const first = await rotate(null, 8400, 20400)
+      const groupId = first.vracGroupId as number
+      await vracGroups.closeGroup(groupId, user)
+      await expect(
+        operations.create({ type: 'SORTIE', isVrac: true, vracGroupId: groupId }, user)
+      ).rejects.toThrow(/clôturé/i)
+    })
+
+    it('ne clôture pas tant qu\'un camion attend sa 2e pesée', async () => {
+      const first = await rotate(null, 8400, 20400)
+      const groupId = first.vracGroupId as number
+
+      const pending = await operations.create(
+        { type: 'SORTIE', isVrac: true, vracGroupId: groupId },
+        user
+      )
+      await operations.capture({ operationId: pending.id, weight: 8400, isManual: false }, user, 'p')
+
+      await expect(vracGroups.closeGroup(groupId, user)).rejects.toThrow(/2e pesée/i)
+
+      // Une fois la rotation annulée, la clôture devient possible et le total reste juste.
+      await operations.cancel(pending.id, 'camion reparti vide', user)
+      const closed = await vracGroups.closeGroup(groupId, user)
+      expect(closed.status).toBe('CLOS')
+      expect(closed.totalNetKg).toBe(12000)
+      expect(closed.closedAt).not.toBeNull()
+    })
+
+    it('ne clôture pas un enlèvement sans rotation pesée, ni deux fois', async () => {
+      const empty = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await expect(vracGroups.closeGroup(empty.vracGroupId as number, user)).rejects.toThrow(
+        /rien à clôturer/i
+      )
+
+      const done = await rotate(null, 8400, 20400)
+      await vracGroups.closeGroup(done.vracGroupId as number, user)
+      await expect(vracGroups.closeGroup(done.vracGroupId as number, user)).rejects.toThrow(
+        /déjà clôturé/i
+      )
+    })
+
+    it('une rotation annulée ne compte pas dans le total', async () => {
+      const first = await rotate(null, 8400, 20400)
+      const groupId = first.vracGroupId as number
+      const second = await rotate(groupId, 8400, 30400)
+      await operations.cancel(second.id, 'erreur de pesée', user)
+
+      expect((await vracGroups.getGroup(groupId))?.totalNetKg).toBe(12000)
+    })
+
+    it('le BL du commercial est rattaché à toutes les rotations', async () => {
+      const first = await rotate(null, 8400, 34150)
+      const groupId = first.vracGroupId as number
+      const second = await rotate(groupId, 8400, 34500)
+      await vracGroups.closeGroup(groupId, user)
+
+      const linked = await vracGroups.linkBl(
+        { id: groupId, blNo: 'BL26-05255', blDate: '2026-10-22', partnerName: 'HANGAR AIN NOUISSY' },
+        user
+      )
+
+      expect(linked.blNo).toBe('BL26-05255')
+      expect(linked.partnerName).toBe('HANGAR AIN NOUISSY')
+      for (const rotation of linked.rotations) {
+        expect(rotation.blNo).toBe('BL26-05255')
+        expect(rotation.blDate).toBe('2026-10-22')
+      }
+      expect((await operations.getById(second.id))?.blNo).toBe('BL26-05255')
+
+      // Plus rien à établir : ni dans la liste des tickets, ni dans celle des enlèvements.
+      const pendingTickets = (await operations.list({ type: 'SORTIE', blPending: true, limit: 500 })).map((o) => o.id)
+      expect(pendingTickets).not.toContain(first.id)
+      const pendingGroups = (await vracGroups.listGroups({ blPending: true })).map((g) => g.id)
+      expect(pendingGroups).not.toContain(groupId)
+    })
+
+    it('ne remplace pas un client déjà saisi', async () => {
+      const first = await rotate(null, 8400, 20400)
+      await operations.update(first.id, { partnerName: 'Client saisi à la balance' }, user)
+      const linked = await vracGroups.linkBl(
+        { id: first.vracGroupId as number, blNo: 'BL26-00001', partnerName: 'Nom du BL' },
+        user
+      )
+      expect(linked.partnerName).toBe('Client saisi à la balance')
+    })
+
+    it('refuse un BL sur un enlèvement sans rotation pesée', async () => {
+      const empty = await operations.create({ type: 'SORTIE', isVrac: true }, user)
+      await expect(
+        vracGroups.linkBl({ id: empty.vracGroupId as number, blNo: 'BL26-00002' }, user)
+      ).rejects.toThrow(/Aucune rotation pesée/i)
+    })
+
+    it("saisir le BL sur un ticket l'étend aux autres rotations de l'enlèvement", async () => {
+      const first = await rotate(null, 8400, 20400)
+      const second = await rotate(first.vracGroupId as number, 8400, 20400)
+
+      await operations.update(second.id, { blNo: 'BL26-00003', blDate: '2026-10-22' }, user)
+
+      expect((await operations.getById(first.id))?.blNo).toBe('BL26-00003')
+      expect((await operations.getById(first.id))?.blDate).toBe('2026-10-22')
+    })
+
+    it('rouvre un enlèvement clos par erreur, sauf si un BL est déjà renseigné', async () => {
+      const first = await rotate(null, 8400, 20400)
+      const groupId = first.vracGroupId as number
+      await vracGroups.closeGroup(groupId, user)
+
+      const reopened = await vracGroups.reopenGroup(groupId, user)
+      expect(reopened.status).toBe('OUVERT')
+      expect(reopened.closedAt).toBeNull()
+      // Il accepte de nouveau une rotation.
+      const more = await rotate(groupId, 8400, 20400)
+      expect(more.vracGroupId).toBe(groupId)
+
+      await vracGroups.closeGroup(groupId, user)
+      await vracGroups.linkBl({ id: groupId, blNo: 'BL26-00004' }, user)
+      await expect(vracGroups.reopenGroup(groupId, user)).rejects.toThrow(/BL est déjà renseigné/i)
+    })
+
+    it('un ticket basculé en vrac reçoit un enlèvement ; sorti du vrac, il le quitte', async () => {
+      const ticket = await operations.create({ type: 'SORTIE' }, user)
+      expect(ticket.vracGroupId).toBeNull()
+
+      const asVrac = await operations.update(ticket.id, { isVrac: true }, user)
+      const groupId = asVrac.vracGroupId as number
+      expect(groupId).toBeGreaterThan(0)
+
+      const back = await operations.update(ticket.id, { isVrac: false }, user)
+      expect(back.vracGroupId).toBeNull()
+      // L'enlèvement resté vide disparaît.
+      expect(await vracGroups.getGroup(groupId)).toBeNull()
+    })
+
+    it('liste les enlèvements par statut et par recherche', async () => {
+      const open = await rotate(null, 8400, 20400, 'Maïs', 'ZZ-OPEN-1')
+      const closed = await rotate(null, 8400, 20400, 'Maïs', 'ZZ-CLOSED-1')
+      await vracGroups.closeGroup(closed.vracGroupId as number, user)
+
+      const opened = (await vracGroups.listGroups({ status: 'OUVERT' })).map((g) => g.id)
+      expect(opened).toContain(open.vracGroupId)
+      expect(opened).not.toContain(closed.vracGroupId)
+
+      const found = await vracGroups.listGroups({ search: 'ZZ-CLOSED' })
+      expect(found.map((g) => g.id)).toEqual([closed.vracGroupId])
+    })
+
+    it('le stock sort la somme des rotations enregistrées', async () => {
+      const first = await rotate(null, 8400, 34150, 'Maïs stock')
+      const second = await rotate(first.vracGroupId as number, 8400, 34500, 'Maïs stock')
+      await operations.close(first.id, user)
+      await operations.close(second.id, user)
+
+      const [moves] = await pool
+        .getPool()
+        .query<RowDataPacket[]>(
+          'SELECT SUM(qty_out) AS total FROM v_stock_moves WHERE operation_id IN (?, ?) AND qty_out > 0',
+          [first.id, second.id]
+        )
+      expect(Number(moves[0]?.total)).toBe(51850)
     })
   })
 })

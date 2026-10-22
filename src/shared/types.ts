@@ -70,6 +70,11 @@ export interface TicketDraft {
    * pesée. Le poids net devient la quantité ; le commercial établit ensuite le BL.
    */
   isVrac?: boolean
+  /**
+   * Vrac : enlèvement (OUVERT) auquel rattacher cette rotation. Absent = nouvel
+   * enlèvement. Plusieurs rotations d'un même client partagent un seul BL.
+   */
+  vracGroupId?: number | null
   plate?: string | null
   driverName?: string | null
   partnerId?: number | null
@@ -99,6 +104,7 @@ export interface Operation extends TicketDraft {
   status: OperationStatus
   isRetour: boolean
   isVrac: boolean
+  vracGroupId: number | null
   first: Weighing | null
   second: Weighing | null
   /** Somme des lignes, figée à la 2e pesée. */
@@ -122,4 +128,53 @@ export interface WeightSample {
   stableMs: number
   raw: string
   at: string
+}
+
+export type VracGroupStatus = 'OUVERT' | 'CLOS'
+
+/** Une rotation d'un enlèvement vrac : un ticket, un aller-retour sur la balance. */
+export interface VracRotation {
+  operationId: number
+  ticketNo: string
+  plate: string | null
+  status: OperationStatus
+  productCode: string | null
+  grossWeight: number | null
+  tareWeight: number | null
+  netWeight: number | null
+  /** 2e pesée faite : le net est connu. */
+  weighed: boolean
+  partnerName: string | null
+  blNo: string | null
+  blDate: string | null
+  createdAt: string
+}
+
+export interface VracProductTotal {
+  productCode: string
+  quantityKg: number
+}
+
+/**
+ * Un enlèvement vrac : toutes les rotations d'un client, sommées pour établir un
+ * seul BL. Le total est calculé, jamais stocké.
+ */
+export interface VracGroup {
+  id: number
+  /** Numéro du ticket de la 1re rotation : c'est ainsi que l'opérateur le nomme. */
+  reference: string
+  status: VracGroupStatus
+  createdAt: string
+  closedAt: string | null
+  partnerName: string | null
+  blNo: string | null
+  blDate: string | null
+  rotations: VracRotation[]
+  /** Somme des nets des rotations pesées et non annulées. */
+  totalNetKg: number
+  weighedCount: number
+  /** Rotations commencées dont la 2e pesée manque. */
+  awaitingCount: number
+  /** Totaux par produit (un BL a une ligne par produit). */
+  products: VracProductTotal[]
 }

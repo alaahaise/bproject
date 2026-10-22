@@ -7,6 +7,7 @@ import CaptureBox, { type CaptureRequest } from '../components/CaptureBox'
 import ManualMark from '../components/ManualMark'
 import ProductLines, { cleanLines, hasIncompleteLine } from '../components/ProductLines'
 import RetourToggle from '../components/RetourToggle'
+import VracGroupPicker from '../components/VracGroupPicker'
 import VracToggle from '../components/VracToggle'
 import SimulatorPanel from '../components/SimulatorPanel'
 import TicketPreview from '../components/TicketPreview'
@@ -35,6 +36,7 @@ export default function Balance1({ type }: { type: OperationType }) {
   const [notes, setNotes] = useState('')
   const [isRetour, setIsRetour] = useState(false)
   const [isVrac, setIsVrac] = useState(false)
+  const [vracGroupId, setVracGroupId] = useState<number | null>(null)
   const [lines, setLines] = useState<ProductLine[]>(() => blankLines(type))
   const [ticket, setTicket] = useState<Operation | null>(null)
   // Camion repassé sur la balance : la 1re pesée du ticket existant est à refaire.
@@ -72,6 +74,7 @@ export default function Balance1({ type }: { type: OperationType }) {
               type,
               isRetour,
               isVrac,
+              vracGroupId: isVrac ? vracGroupId : null,
               plate: plate || null,
               driverName: driverName || null,
               notes: notes || null,
@@ -98,7 +101,7 @@ export default function Balance1({ type }: { type: OperationType }) {
         setBusy(false)
       }
     },
-    [type, isRetour, isVrac, plate, driverName, notes, lines, knowsProduct, redo, stale, t]
+    [type, isRetour, isVrac, vracGroupId, plate, driverName, notes, lines, knowsProduct, redo, stale, t]
   )
 
   const balance = useBalance(setError)
@@ -121,6 +124,7 @@ export default function Balance1({ type }: { type: OperationType }) {
     setNotes('')
     setIsRetour(false)
     setIsVrac(false)
+    setVracGroupId(null)
     setLines(blankLines(type))
     setError(null)
   }
@@ -289,6 +293,14 @@ export default function Balance1({ type }: { type: OperationType }) {
               onChange={setIsVrac}
               disabled={busy}
             />
+            {isVrac && (
+              <VracGroupPicker
+                plate={plate}
+                value={vracGroupId}
+                onChange={setVracGroupId}
+                disabled={busy}
+              />
+            )}
 
             {knowsProduct ? (
               <ProductLines lines={lines} onChange={setLines} disabled={busy} />

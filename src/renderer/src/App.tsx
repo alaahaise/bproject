@@ -8,6 +8,7 @@ import Balance2 from './pages/Balance2'
 import Login from './pages/Login'
 import Operations from './pages/Operations'
 import Settings from './pages/Settings'
+import VracGroups from './pages/VracGroups'
 
 /**
  * Le menu latéral ne porte que les types de pesée (on ne mélange pas les entrées
@@ -117,6 +118,9 @@ function Shell({ user, onLogout }: { user: SessionUser; onLogout: () => void }) 
               <NavLink to={`${currentMenu.path}/balance-1`}>{t('nav.balance1')}</NavLink>
               <NavLink to={`${currentMenu.path}/balance-2`}>{t('nav.balance2')}</NavLink>
               <NavLink to={`${currentMenu.path}/tickets`}>{t('nav.tickets')}</NavLink>
+              {currentMenu.type === 'SORTIE' && (
+                <NavLink to={`${currentMenu.path}/vrac`}>{t('nav.vrac')}</NavLink>
+              )}
             </nav>
           </header>
         )}
@@ -127,6 +131,7 @@ function Shell({ user, onLogout }: { user: SessionUser; onLogout: () => void }) 
                 <Route path={`${menu.path}/balance-1`} element={<Balance1 type={menu.type} />} />
                 <Route path={`${menu.path}/balance-2`} element={<Balance2 type={menu.type} />} />
                 <Route path={`${menu.path}/tickets`} element={<Operations type={menu.type} />} />
+                {menu.type === 'SORTIE' && <Route path={`${menu.path}/vrac`} element={<VracGroups />} />}
               </Fragment>
             ))}
             <Route path="/settings" element={<Settings />} />

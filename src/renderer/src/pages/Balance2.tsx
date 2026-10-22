@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Location, OpUpdate } from '@shared/channels'
 import { asksFrom, asksTo, locationFieldsFor } from '@shared/domain/locations'
 import { isManualKind } from '@shared/domain/weighing'
-import type { Operation, OperationType, ProductLine, WeightSample } from '@shared/types'
+import type { VracGroup, Operation, OperationType, ProductLine, WeightSample } from '@shared/types'
 import { api, call, errorMessage, formatDateTime, formatKg } from '../api'
 import CaptureBox, { type CaptureRequest } from '../components/CaptureBox'
 import LocationPickers from '../components/LocationPickers'
@@ -75,6 +75,23 @@ const EMPTY_FORM: CompleteForm = {
 export default function Balance2({ type }: { type: OperationType }) {
   const { t, lang } = useI18n()
   const [selected, setSelected] = useState<Operation | null>(null)
+  // Enlèvement du ticket vrac pesé : son total court avec chaque rotation.
+  const [vracGroup, setVracGroup] = useState<VracGroup | null>(null)
+  const vracGroupId = selected?.vracGroupId ?? null
+  const secondDone = selected?.second != null
+  useEffect(() => {
+    if (vracGroupId == null || !secondDone) {
+      setVracGroup(null)
+      return
+    }
+    let alive = true
+    call(api.vrac.get(vracGroupId))
+      .then((group) => alive && setVracGroup(group))
+      .catch(() => alive && setVracGroup(null))
+    return () => {
+      alive = false
+    }
+  }, [vracGroupId, secondDone])
   const [form, setForm] = useState<CompleteForm>(EMPTY_FORM)
   const [lines, setLines] = useState<ProductLine[]>([])
   const [locations, setLocations] = useState<Location[]>([])
@@ -647,7 +664,23 @@ export default function Balance2({ type }: { type: OperationType }) {
                   )}
                 </div>
 
-                {selected.isVrac && <p className="hint-box">{t('vrac.handover')}</p>}
+                {selected.isVrac && (
+                  <div className="hint-box">
+                    <p>{t('vrac.handover')}</p>
+                    {vracGroup && (
+                      <p>
+                        <strong>
+                          {t('vracGroup.current', {
+                            ref: vracGroup.reference,
+                            count: String(vracGroup.weighedCount),
+                            total: `${formatKg(vracGroup.totalNetKg, lang)}`
+                          })}
+                        </strong>
+                      </p>
+                    )}
+                    <p className="muted">{t('vracGroup.nextHint')}</p>
+                  </div>
+                )}
 
                 {!closed && (
                   <div className="row">

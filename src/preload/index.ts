@@ -53,6 +53,15 @@ const api: AppApi = {
     html: (id, lang) => invoke(CH.opsHtml, { id, lang }),
     print: (id, lang) => invoke(CH.opsPrint, { id, lang })
   },
+  vrac: {
+    groups: (filter) => invoke(CH.vracGroups, filter),
+    get: (id) => invoke(CH.vracGet, { id }),
+    close: (id) => invoke(CH.vracClose, { id }),
+    reopen: (id) => invoke(CH.vracReopen, { id }),
+    linkBl: (input) => invoke(CH.vracLinkBl, input),
+    html: (id, lang) => invoke(CH.vracHtml, { id, lang }),
+    print: (id, lang) => invoke(CH.vracPrint, { id, lang })
+  },
   ref: {
     locations: () => invoke(CH.refLocations)
   },
