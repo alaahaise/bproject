@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import type { Location, OpUpdate } from '@shared/channels'
 import { asksFrom, asksTo, locationFieldsFor } from '@shared/domain/locations'
 import { allowsBl } from '@shared/domain/operation-fields'
@@ -13,6 +14,7 @@ import TicketFilters from '../components/TicketFilters'
 import TicketPreview from '../components/TicketPreview'
 import { useTicketPage } from '../hooks/useTicketPage'
 import { useI18n } from '../i18n'
+import { operationPath } from '../navigation'
 
 interface EditDraft {
   isRetour: boolean
@@ -51,6 +53,7 @@ function toDraft(op: Operation): EditDraft {
  */
 export default function Operations({ type }: { type: OperationType }) {
   const { t, lang } = useI18n()
+  const navigate = useNavigate()
   const [status, setStatus] = useState<OperationStatus | null>(null)
   const [locations, setLocations] = useState<Location[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -249,25 +252,11 @@ export default function Operations({ type }: { type: OperationType }) {
 
       {(error ?? list.error) && <p className="error">{error ?? list.error}</p>}
 
-      <table>
-        <thead>
-          <tr>
-            <th>{t('station.ticket')}</th>
-            <th>{t('ops.date')}</th>
-            <th>{t('station.plate')}</th>
-            <th>{t('ops.products')}</th>
-            <th>{t('station.tare')}</th>
-            <th>{t('station.gross')}</th>
-            <th>{t('station.net')}</th>
-            <th>{t('station.ecart')}</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) =>
-            editingId === row.id ? (
-              <tr key={row.id}>
-                <td colSpan={9}>
+      <section className="ticket-list" aria-label={t('ops.title')}>
+        {rows.map((row) => (
+            <article key={row.id} className={`ticket-card${row.status === 'ANNULEE' ? ' cancelled' : ''}`}>
+              {editingId === row.id ? (
+                <div className="ticket-edit">
                   <strong>{t('ops.editTitle')}</strong>
                   <div className="grid">
                     <label>
@@ -373,134 +362,66 @@ export default function Operations({ type }: { type: OperationType }) {
                       {t('common.cancel')}
                     </button>
                   </div>
-                </td>
-              </tr>
-            ) : (
-              <tr key={row.id} className={row.status === 'ANNULEE' ? 'cancelled' : undefined}>
-                <td>
+                </div>
+              ) : (
+                <>
+                <div className="ticket-card-head">
+                  <div>
                   <strong>{row.ticketNo}</strong>
                   {row.isRetour && <span className="badge warn">{t('station.retour')}</span>}
                   {row.isVrac && <span className="badge warn">{t('station.vrac')}</span>}
                   {isBlPending(row) && <span className="badge">{t('ops.blPending')}</span>}
-                  <br />
-                  <small className="muted">{t(`ops.status.${row.status}`)}</small>
+                  <span className="muted ticket-date"> · {formatDateTime(row.createdAt)}</span>
+                  <div className="ticket-status"><span className="muted">{t(`ops.status.${row.status}`)}</span>
                   {row.status !== 'ANNULEE' && (
                     <span className={row.second == null ? 'badge' : 'badge ok'}>
                       {row.second == null ? t('ops.primary') : t('ops.final')}
                     </span>
                   )}
-                </td>
-                <td>{formatDateTime(row.createdAt)}</td>
-                <td>{row.plate || '—'}</td>
-                <td>
-                  {row.lines.length === 0
-                    ? '—'
-                    : row.lines.map((l) => `${l.productCode} (${l.quantityKg} kg)`).join(', ')}
-                </td>
-                <td>{formatKg(row.tareWeight, lang)}</td>
-                <td>{formatKg(row.grossWeight, lang)}</td>
-                <td>
-                  <strong>{formatKg(row.netWeight, lang)}</strong>
-                </td>
-                <td>
-                  {formatKg(row.ecart, lang)}
-                  {row.ecartOk != null && (
-                    <span className={row.ecartOk ? 'badge ok' : 'badge warn'}>
-                      {row.ecartOk ? t('station.ecartOk') : t('station.ecartKo')}
-                    </span>
-                  )}
-                </td>
-                <td>
-                  <div className="row actions">
-                    {row.status === 'OUVERTE' && row.second != null && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void closeTicket(row.id)}
-                      >
-                        {t('common.save')}
-                      </button>
-                    )}
-                    {row.status !== 'ANNULEE' && (
-                      <>
-                        <button
-                          type="button"
-                          className="ghost"
-                          disabled={busy}
-                          onClick={() => void printTicket(row.id)}
-                        >
-                          {t('ops.print')}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost"
-                          disabled={busy}
-                          onClick={() => void openPreview(row.id)}
-                        >
-                          {t('ops.preview')}
-                        </button>
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => {
-                        setEditingId(row.id)
-                        setDraft(toDraft(row))
-                        setBlNotice(null)
-                      }}
-                    >
-                      {t('ops.edit')}
-                    </button>
-                    {row.status === 'ANNULEE' ? (
-                      <small className="muted">{row.cancelReason}</small>
-                    ) : cancellingId === row.id ? (
-                      <>
-                        <input
-                          autoFocus
-                          placeholder={t('ops.cancelTitle')}
-                          value={reason}
-                          onChange={(e) => setReason(e.target.value)}
-                        />
-                        <button
-                          type="button"
-                          className="danger"
-                          disabled={reason.trim().length < 3}
-                          onClick={() => void confirmCancel(row.id)}
-                        >
-                          {t('common.confirm')}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => setCancellingId(null)}
-                        >
-                          {t('common.cancel')}
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => setCancellingId(row.id)}
-                      >
-                        {t('common.cancel')}
-                      </button>
-                    )}
                   </div>
-                </td>
-              </tr>
-            )
-          )}
-          {rows.length === 0 && !list.loading && (
-            <tr>
-              <td colSpan={9} className="muted">
-                {t('ops.empty')}
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+                  </div>
+                  <div className="ticket-net"><span className="muted">{t('station.net')}</span><strong>{formatKg(row.netWeight, lang)}</strong></div>
+                </div>
+                {row.status === 'OUVERTE' && row.second == null && (
+                  <div className="warn-box ticket-alert"><strong>{t('ops.awaitingSecond')}</strong><button type="button" className="primary" onClick={() => navigate(`${operationPath(type)}/balance-2`, { state: { pendingTicket: row } })}>{t('ops.continueWeighing')}</button></div>
+                )}
+                <div className="ticket-facts">
+                  <span><b>{t('station.plate')}:</b> {row.plate || '—'}</span>
+                  <span><b>{t('station.ecart')}:</b> {formatKg(row.ecart, lang)} {row.ecartOk != null && <span className={row.ecartOk ? 'badge ok' : 'badge warn'}>{row.ecartOk ? t('station.ecartOk') : t('station.ecartKo')}</span>}</span>
+                </div>
+                <details className="ticket-more">
+                  <summary>{t('ops.moreDetails')}</summary>
+                  <div className="ticket-facts">
+                    <span><b>{t('station.driver')}:</b> {row.driverName || '—'}</span>
+                    <span><b>{t('station.partner')}:</b> {row.partnerName || '—'}</span>
+                    <span><b>{t('station.tare')}:</b> {formatKg(row.tareWeight, lang)}</span>
+                    <span><b>{t('station.gross')}:</b> {formatKg(row.grossWeight, lang)}</span>
+                    <span><b>{t('ops.products')}:</b> {row.lines.length === 0 ? '—' : row.lines.map((l) => `${l.productCode} (${l.quantityKg} kg)`).join(', ')}</span>
+                    {row.blNo && <span><b>{t('station.blNo')}:</b> {row.blNo}</span>}
+                    {row.status === 'ANNULEE' && row.cancelReason && <span><b>{t('ops.cancelTitle')}:</b> {row.cancelReason}</span>}
+                  </div>
+                </details>
+                <div className="row actions ticket-actions">
+                    {row.status === 'OUVERTE' && row.second != null && (
+                      <button type="button" className="primary" disabled={busy} onClick={() => void closeTicket(row.id)}>{t('ops.closeTicket')}</button>
+                    )}
+                    {row.status !== 'ANNULEE' && <>
+                      <button type="button" className="ghost" disabled={busy} onClick={() => void printTicket(row.id)}>{t('ops.print')}</button>
+                      <button type="button" className="ghost" disabled={busy} onClick={() => void openPreview(row.id)}>{t('ops.preview')}</button>
+                    </>}
+                    <button type="button" className="ghost" onClick={() => { setEditingId(row.id); setDraft(toDraft(row)); setBlNotice(null) }}>{t('ops.edit')}</button>
+                    {row.status !== 'ANNULEE' && (cancellingId === row.id ? <>
+                      <input autoFocus aria-label={t('ops.cancelTitle')} placeholder={t('ops.cancelTitle')} value={reason} onChange={(e) => setReason(e.target.value)} />
+                      <button type="button" className="danger" disabled={reason.trim().length < 3} onClick={() => void confirmCancel(row.id)}>{t('common.confirm')}</button>
+                      <button type="button" className="ghost" onClick={() => setCancellingId(null)}>{t('common.cancel')}</button>
+                    </> : <button type="button" className="ghost" onClick={() => setCancellingId(row.id)}>{t('ops.cancelTicket')}</button>)}
+                </div>
+                </>
+              )}
+            </article>
+          ))}
+        {rows.length === 0 && !list.loading && <p className="empty-state muted">{t('ops.empty')}</p>}
+      </section>
 
       {list.data && (
         <Pagination

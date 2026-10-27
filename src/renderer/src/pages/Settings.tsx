@@ -140,11 +140,23 @@ export default function Settings() {
       </p>
       <p className="warn-box">{t('settings.adminWarning')}</p>
 
-      <DbForm onConnected={() => void api.app.status().then(setStatus)} />
-      <BalanceForm />
-      <BlApiForm />
-      <PasswordForm />
-      {status?.dbConnected && <CompanyForm />}
+      <details className="settings-group">
+        <summary>{t('db.title')}</summary>
+        <DbForm onConnected={() => void api.app.status().then(setStatus)} />
+      </details>
+      <details className="settings-group">
+        <summary>{t('bal.title')}</summary>
+        <BalanceForm />
+      </details>
+      <details className="settings-group">
+        <summary>{t('settings.blApi')}</summary>
+        <BlApiForm />
+      </details>
+      <details className="settings-group">
+        <summary>{t('settings.accountAndCompany')}</summary>
+        <PasswordForm />
+        {status?.dbConnected && <CompanyForm />}
+      </details>
 
       <section className="card">
         <h2>{t('settings.app')}</h2>

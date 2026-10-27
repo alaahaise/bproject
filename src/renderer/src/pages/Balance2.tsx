@@ -10,6 +10,7 @@ import CaptureBox, { type CaptureRequest } from '../components/CaptureBox'
 import LocationPickers from '../components/LocationPickers'
 import ManualMark from '../components/ManualMark'
 import Pagination from '../components/Pagination'
+import PendingTicketCard from '../components/PendingTicketCard'
 import ProductLines, { cleanLines, hasIncompleteLine } from '../components/ProductLines'
 import RetourToggle from '../components/RetourToggle'
 import VracToggle from '../components/VracToggle'
@@ -371,7 +372,10 @@ export default function Balance2({ type }: { type: OperationType }) {
   const complete = selected?.second != null
   const closed = selected != null && selected.status !== 'OUVERTE'
   // Le vrac n'a pas de lignes à compléter : seul le nom du produit est exigé.
-  const incomplete = form.isVrac ? form.vracProduct.trim() === '' : hasIncompleteLine(lines)
+  const hasPartialLine = !form.isVrac && hasIncompleteLine(lines)
+  const missingLines = !form.isVrac && !hasPartialLine && cleanLines(lines).length === 0
+  const missingVracProduct = form.isVrac && form.vracProduct.trim() === ''
+  const incomplete = hasPartialLine || missingLines || missingVracProduct
   const working = busy || blBusy
 
   const rows = list.data?.rows ?? []
@@ -395,48 +399,19 @@ export default function Balance2({ type }: { type: OperationType }) {
             onDateTo={list.setDateTo}
           />
 
-          <table>
-            <thead>
-              <tr>
-                <th>{t('station.ticket')}</th>
-                <th>{t('ops.date')}</th>
-                <th>{t('station.plate')}</th>
-                <th>{t('station.driver')}</th>
-                <th>{t('station.firstWeigh')}</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
+          {rows.length > 0 ? (
+            <div className="pending-grid">
               {rows.map((op) => (
-                <tr key={op.id}>
-                  <td>
-                    <strong>{op.ticketNo}</strong>
-                    {op.isRetour && <span className="badge warn">{t('station.retour')}</span>}
-                    {op.isVrac && <span className="badge warn">{t('station.vrac')}</span>}
-                  </td>
-                  <td>{formatDateTime(op.createdAt)}</td>
-                  <td>{op.plate || '—'}</td>
-                  <td>{op.driverName || '—'}</td>
-                  <td>
-                    {formatKg(op.first?.weight, lang)}
-                    {op.first?.isManual && <ManualMark />}
-                  </td>
-                  <td>
-                    <button type="button" className="primary ticket-open" onClick={() => choose(op)}>
-                      {t('bal2.choose')}
-                    </button>
-                  </td>
-                </tr>
+                <PendingTicketCard key={op.id} ticket={op} onOpen={choose} />
               ))}
-              {rows.length === 0 && !list.loading && (
-                <tr>
-                  <td colSpan={6} className="muted">
-                    {list.filtered ? t('bal2.noMatch') : t('bal2.none')}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+            </div>
+          ) : (
+            !list.loading && (
+              <p className="empty-state" role="status">
+                {list.filtered ? t('bal2.noMatch') : t('bal2.none')}
+              </p>
+            )
+          )}
 
           {list.data && (
             <Pagination
@@ -533,45 +508,45 @@ export default function Balance2({ type }: { type: OperationType }) {
                   </>
                 ) : (
                   <>
-                  <ProductLines lines={lines} onChange={changeLines} disabled={working} />
-                  <div className="pair">
-                    <label>
-                      {t('station.partner')}
-                      <input
-                        value={form.partnerName}
-                        disabled={working}
-                        onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
-                      />
-                    </label>
-                    {allowsBl(type, form.isRetour) && (
+                    <ProductLines lines={lines} onChange={changeLines} disabled={working} />
+                    <div className="pair">
                       <label>
-                        {t('station.blNo')}
-                        <div className="bl-lookup">
-                          <input
-                            value={form.blNo}
-                            disabled={working}
-                            onChange={(e) => {
-                              setForm({ ...form, blNo: e.target.value })
-                              setBlNotice(null)
-                            }}
-                          />
-                          <button
-                            type="button"
-                            className="ghost"
-                            disabled={working || form.blNo.trim() === ''}
-                            onClick={() => void loadBl()}
-                          >
-                            {blBusy ? t('common.loading') : t('bal2.blLoad')}
-                          </button>
-                        </div>
+                        {t('station.partner')}
+                        <input
+                          value={form.partnerName}
+                          disabled={working}
+                          onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
+                        />
                       </label>
+                      {allowsBl(type, form.isRetour) && (
+                        <label>
+                          {t('station.blNo')}
+                          <div className="bl-lookup">
+                            <input
+                              value={form.blNo}
+                              disabled={working}
+                              onChange={(e) => {
+                                setForm({ ...form, blNo: e.target.value })
+                                setBlNotice(null)
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="ghost"
+                              disabled={working || form.blNo.trim() === ''}
+                              onClick={() => void loadBl()}
+                            >
+                              {blBusy ? t('common.loading') : t('bal2.blLoad')}
+                            </button>
+                          </div>
+                        </label>
+                      )}
+                    </div>
+                    {blNotice && (
+                      <p className={blNotice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">
+                        {blNotice.text}
+                      </p>
                     )}
-                  </div>
-                  {blNotice && (
-                    <p className={blNotice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">
-                      {blNotice.text}
-                    </p>
-                  )}
                   </>
                 )}
                 <RetourToggle
@@ -741,7 +716,18 @@ export default function Balance2({ type }: { type: OperationType }) {
 
             {!complete && (
               <>
+                {!redo && missingLines && (
+                  <p className="error capture-hint" role="status">
+                    {t('bal2.needLines')}
+                  </p>
+                )}
+                {!redo && missingVracProduct && (
+                  <p className="error capture-hint" role="status">
+                    {t('vrac.needProduct')}
+                  </p>
+                )}
                 <CaptureBox
+                  key={`${selected.id}-${redo ? 'redo-first' : 'second-weigh'}`}
                   label={redo ? t('bal.redoCapture') : t('bal2.capture')}
                   sample={balance.sample}
                   busy={working}

@@ -49,14 +49,22 @@ export default function CaptureBox({
         <label className="manual-input">
           {t('cap.manualWeight')}
           <input
+            id="manual-weight"
             type="number"
             min={0}
             step="any"
             inputMode="decimal"
             autoFocus
             value={typed}
+            aria-invalid={typed.trim() !== '' && !typedOk}
+            aria-describedby={!typedOk ? 'manual-weight-hint' : undefined}
             onChange={(e) => setTyped(e.target.value)}
           />
+          {!typedOk && (
+            <span className="muted" id="manual-weight-hint" role="status">
+              {t('cap.manualHint')}
+            </span>
+          )}
         </label>
       )}
 

@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from 'react'
 import { HashRouter, Navigate, NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import type { SessionUser } from '@shared/types'
+import caspmLogo from '@shared/assets/caspm-logo.png'
 import { api, call } from './api'
 import { useI18n, type Lang } from './i18n'
 import Balance1 from './pages/Balance1'
@@ -64,10 +65,14 @@ function Shell({ user, onLogout }: { user: SessionUser; onLogout: () => void }) 
 
   return (
     <div className="shell" data-type={currentMenu?.type}>
+      <a className="skip-link" href="#main-content">{t('common.skipToContent')}</a>
       <aside className="sidebar">
-        <span className="brand">{t('app.title')}</span>
+        <div className="brand-block">
+          <img className="brand-logo" src={caspmLogo} alt="CASPM — Complexe Avicole" />
+          <span className="brand">{t('app.title')}</span>
+        </div>
         <span className="nav-heading">{t('nav.operationTypes')}</span>
-        <nav>
+        <nav aria-label={t('nav.operationTypes')}>
           {MENUS.map((menu) => (
             <div className="menu" key={menu.type}>
               {/* Actif sur les trois onglets du type, pas seulement sur la 1re balance. */}
@@ -104,7 +109,7 @@ function Shell({ user, onLogout }: { user: SessionUser; onLogout: () => void }) 
           </button>
         </div>
       </aside>
-      <main>
+      <main id="main-content" tabIndex={-1}>
         {currentMenu && (
           // La classe `flip-N` alterne à chaque changement de type : le CSS rejoue alors l'animation.
           <header className={`type-bar flip-${flip % 2}`}>
@@ -115,7 +120,7 @@ function Shell({ user, onLogout }: { user: SessionUser; onLogout: () => void }) 
               <h1>{t(`station.type.${currentMenu.type}`)}</h1>
               <p>{t(`station.hint.${currentMenu.type}`)}</p>
             </div>
-            <nav className="tabs">
+            <nav className="tabs" aria-label={t('nav.workflowSteps')}>
               <NavLink to={`${currentMenu.path}/balance-1`}>{t('nav.balance1')}</NavLink>
               <NavLink to={`${currentMenu.path}/balance-2`}>{t('nav.balance2')}</NavLink>
               <NavLink to={`${currentMenu.path}/tickets`}>{t('nav.tickets')}</NavLink>

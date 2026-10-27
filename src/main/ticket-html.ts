@@ -63,6 +63,7 @@ interface Labels {
   types: Record<OperationType, string>
   firstWeigh: string
   secondWeigh: string
+  tagline: string
 }
 
 const LABELS: Record<Lang, Labels> = {
@@ -103,7 +104,8 @@ const LABELS: Record<Lang, Labels> = {
       TIERS: 'PESÉE TIERS'
     },
     firstWeigh: '1re pesée',
-    secondWeigh: '2e pesée'
+    secondWeigh: '2e pesée',
+    tagline: 'Élevons la qualité ensemble'
   },
   ar: {
     title: 'إدارة الوزن',
@@ -142,7 +144,8 @@ const LABELS: Record<Lang, Labels> = {
       TIERS: 'وزن الغير'
     },
     firstWeigh: 'الوزن الأول',
-    secondWeigh: 'الوزن الثاني'
+    secondWeigh: 'الوزن الثاني',
+    tagline: 'نرتقي بالجودة معاً'
   }
 }
 
@@ -172,7 +175,7 @@ function row(
 
 export function buildTicketHtml(
   op: Operation,
-  opts: { company: string; locations: Location[]; lang: Lang }
+  opts: { company: string; locations: Location[]; lang: Lang; logoDataUri?: string }
 ): string {
   const t = LABELS[opts.lang]
   const place = (id: number | null | undefined): string => {
@@ -208,6 +211,15 @@ export function buildTicketHtml(
 
   const cancelled =
     op.status === 'ANNULEE' ? `<h2 class="cancelled">${escapeHtml(t.cancelled)}</h2>` : ''
+
+  const logo = opts.logoDataUri
+    ? `<img class="brand-logo" src="${escapeHtml(opts.logoDataUri)}" alt="CASPM — Complexe Avicole">`
+    : ''
+  const companyName = opts.company.trim().toLocaleLowerCase() === 'caspm' ? '' : opts.company.trim()
+  const company = companyName ? `<div class="company-name">${escapeHtml(companyName)}</div>` : ''
+  const plate = op.plate
+    ? `<section class="plate-card"><span>${escapeHtml(t.plate)}</span><strong class="plate-value">${escapeHtml(op.plate)}</strong></section>`
+    : ''
 
   // Un ticket primaire n'a qu'une pesée : pas de net ni d'écart à montrer, et
   // c'est écrit noir sur blanc pour que personne ne lise le bon n° 1 comme un
@@ -251,33 +263,43 @@ export function buildTicketHtml(
 <style>
   @page { size: 80mm auto; margin: 4mm; }
   * { box-sizing: border-box; }
-  body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 12px; width: 72mm; margin: 0; color: #000; }
-  h1 { font-size: 14px; margin: 0; text-align: center; letter-spacing: .5px; }
-  h2 { font-size: 13px; margin: 6px 0 2px; text-align: center; }
-  h2.cancelled { border: 1px dashed #000; padding: 3px; margin: 6px 0; }
-  h2.primary { border: 1px dashed #000; padding: 3px; margin: 6px 0; }
-  .no { text-align: center; font-size: 15px; font-weight: 700; margin: 2px 0 6px; }
-  .row { display: flex; justify-content: space-between; gap: 6px; padding: 1px 0; }
+  body { margin: 0; color: #111; font: 12px/1.35 "Segoe UI", Tahoma, Arial, sans-serif; }
+  .ticket-paper { width: 100%; max-width: 72mm; margin: 0 auto; padding: 0 1mm; }
+  .ticket-header { text-align: center; padding-bottom: 3mm; border-bottom: 1px solid #555; }
+  .brand-logo { display: block; width: min(54mm, 100%); max-height: 18mm; object-fit: contain; margin: 0 auto 2mm; }
+  .company-name { font-size: 11px; font-weight: 700; }
+  .tagline { font-size: 9px; font-style: italic; }
+  .website { font-size: 9px; letter-spacing: .2px; }
+  h1 { font-size: 13px; margin: 3mm 0 1mm; text-align: center; letter-spacing: .3px; }
+  h2 { font-size: 11px; margin: 2mm 0 1mm; text-align: center; }
+  h2.cancelled, h2.primary { border: 1px solid #333; padding: 2mm; margin: 2mm 0; }
+  .no { text-align: center; font-size: 17px; font-weight: 800; margin: 1mm 0 2mm; font-variant-numeric: tabular-nums; }
+  .plate-card { display: flex; flex-direction: column; align-items: center; gap: 1mm; padding: 2mm; margin: 2mm 0; border: 1px solid #333; text-align: center; }
+  .plate-card span { font-size: 9px; font-weight: 700; text-transform: uppercase; }
+  .plate-value { font-size: 17px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; padding: 1mm 0; }
+  .row span { min-width: 0; overflow-wrap: anywhere; }
   .row span:last-child { text-align: ${opts.lang === 'ar' ? 'left' : 'right'}; font-weight: 600; }
   .row.strong { font-weight: 700; }
-  .weight { text-align: center; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .weigh { border-top: 1px dashed #000; padding-top: 4px; margin-top: 4px; }
-  .lines { border-top: 1px dashed #000; margin-top: 4px; padding-top: 4px; }
-  .waiting { text-align: center; font-weight: 700; border: 1px dashed #000; padding: 4px; margin-top: 6px; }
-  hr { border: 0; border-top: 1px solid #000; margin: 6px 0; }
-  .net { font-size: 18px; }
-  .m { border: 1px solid #000; border-radius: 2px; padding: 0 3px; font-size: 11px; }
-  .legend { text-align: center; font-size: 10px; margin-top: 4px; }
+  .lines, .weigh { border-top: 1px solid #777; margin-top: 2mm; padding-top: 1mm; }
+  .weight { text-align: center; font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .waiting { text-align: center; font-weight: 800; border: 1px solid #333; padding: 2mm; margin-top: 2mm; }
+  hr { border: 0; border-top: 1px solid #333; margin: 2mm 0; }
+  .net { font-size: 19px; border: 2px solid #111; padding: 2mm; margin-top: 2mm; }
+  .m { border: 1px solid #000; border-radius: 2px; padding: 0 3px; font-size: 10px; }
+  .legend { text-align: center; font-size: 9px; margin-top: 2mm; }
+  @media screen { body { background: #fff; } .ticket-paper { padding: 3mm; } }
 </style>
 </head>
 <body>
-  <h1>${escapeHtml(opts.company)}</h1>
+<main class="ticket-paper">
+  <header class="ticket-header">${logo}${company}<div class="tagline">${escapeHtml(t.tagline)}</div><div class="website">caspm.dz</div></header>
   <h2>${escapeHtml(title)}</h2>
   <div class="no">${escapeHtml(op.ticketNo)}</div>
   ${isPrimary ? `<h2 class="primary">${escapeHtml(t.primaryTitle)}</h2>` : ''}
   ${cancelled}
   ${row(t.date, formatDateTime(op.createdAt))}
-  ${row(t.plate, op.plate)}
+  ${plate}
   ${row(t.driver, op.driverName)}
   ${linesBlock}
   ${row(t.partner, op.partnerName)}
@@ -292,6 +314,7 @@ export function buildTicketHtml(
   <hr>
   ${row(t.operator, op.operatorName)}
   ${op.status === 'ANNULEE' && op.cancelReason ? row(t.cancelled, op.cancelReason) : ''}
+</main>
 </body>
 </html>`
 }

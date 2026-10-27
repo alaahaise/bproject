@@ -42,6 +42,7 @@ import { balance, listPorts } from './serial/service'
 import { loadSettings, saveSettings } from './settings'
 import { toSettingsView } from './settings-view'
 import { buildTicketHtml } from './ticket-html'
+import { CASPM_LOGO_DATA_URI } from './ticket-brand'
 import * as vracGroups from './db/vrac-groups'
 import { buildVracGroupHtml } from './vrac-html'
 
@@ -331,7 +332,12 @@ async function ticketHtml(id: number, lang: 'fr' | 'ar'): Promise<string> {
     operations.getSetting('company_name'),
     operations.listLocations()
   ])
-  return buildTicketHtml(operation, { company: company ?? 'Société', locations, lang })
+  return buildTicketHtml(operation, {
+    company: company ?? 'CASPM',
+    locations,
+    lang,
+    logoDataUri: CASPM_LOGO_DATA_URI
+  })
 }
 
 async function vracGroupHtml(id: number, lang: 'fr' | 'ar'): Promise<string> {

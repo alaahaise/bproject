@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import type { SessionUser } from '@shared/types'
+import caspmLogo from '@shared/assets/caspm-logo.png'
 import { api, call, errorMessage } from '../api'
 import { useI18n } from '../i18n'
 import DbForm from '../components/DbForm'
@@ -10,7 +11,7 @@ import DbForm from '../components/DbForm'
  * aller la régler.
  */
 export default function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
-  const { t } = useI18n()
+  const { t, lang, setLang } = useI18n()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
   const [showSetup, setShowSetup] = useState(false)
@@ -31,9 +32,17 @@ export default function Login({ onLogin }: { onLogin: (user: SessionUser) => voi
   }
 
   return (
-    <div className="center-page">
+    <div className="center-page login-page">
+      <div className="login-language">
+        <label htmlFor="login-language">{t('login.language')}</label>
+        <select id="login-language" value={lang} onChange={(e) => setLang(e.target.value as 'fr' | 'ar')}>
+          <option value="fr">Français</option>
+          <option value="ar">العربية</option>
+        </select>
+      </div>
       <form className="card login" onSubmit={submit}>
-        <h1>{t('app.title')}</h1>
+        <img className="login-logo" src={caspmLogo} alt="CASPM — Complexe Avicole" />
+        <p className="login-caption">{t('app.title')}</p>
         <h2>{t('login.title')}</h2>
         <label>
           {t('login.username')}
@@ -46,14 +55,14 @@ export default function Login({ onLogin }: { onLogin: (user: SessionUser) => voi
         <button type="submit" disabled={busy}>
           {t('login.submit')}
         </button>
-        {error && <p className="error">{error}</p>}
+        {error && <p className="error" role="alert">{error}</p>}
         <button type="button" className="link" onClick={() => setShowSetup(!showSetup)}>
           {t('login.setup')}
         </button>
       </form>
 
       {showSetup && (
-        <div className="center-page">
+        <div className="auth-setup">
           <DbForm />
           <p className="muted">{t('login.hint')}</p>
         </div>

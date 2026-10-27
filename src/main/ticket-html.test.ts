@@ -43,6 +43,19 @@ const opts = {
 }
 
 describe('ticket HTML', () => {
+  it('centers the ticket, uses the local company logo, and makes the plate and net easy to spot', () => {
+    const html = buildTicketHtml(ticket(), {
+      ...opts,
+      logoDataUri: 'data:image/png;base64,TE9HTw=='
+    })
+
+    expect(html).toContain('<main class="ticket-paper">')
+    expect(html).toContain('src="data:image/png;base64,TE9HTw=="')
+    expect(html).toContain('class="plate-value"')
+    expect(html).toContain('class="row strong net"')
+    expect(html).toContain('max-width: 72mm; margin: 0 auto')
+  })
+
   it('affiche le numéro, le net et le lieu résolu', () => {
     const html = buildTicketHtml(ticket(), opts)
     expect(html).toContain('E-2026-000001')
