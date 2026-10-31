@@ -54,8 +54,10 @@ The two weighings are two screens, and the workflow is deliberately split:
 1. **1re balance** — the truck arrives: plate + driver, one capture. That creates
    the primary ticket and it can be printed immediately.
 2. **2e balance** — the operator **picks** a ticket still waiting for its 2nd
-   weighing from the list, completes the rest (products, partner, locations; a BL
-   only for operation types that use one),
+   weighing from the list. A normal SORTIE starts with its BL number: the operator
+   loads the BL and reviews its read-only product lines. If HFSQL cannot provide
+   lines, the operator can open the manual exception and enter the BL from paper.
+   Other operation types complete the fields they use (products, partner, locations),
    then captures the 2nd weight. The écart is computed against the product total,
    the operator confirms, and the final ticket prints.
 
@@ -98,6 +100,10 @@ Rules that matter for a company balance:
 | BL missing, ambiguous number, no weight in HFSQL, HFSQL unreachable | handled | BL service answers 404 / 409 / `weightComplete=false` / 503; manual entry stays possible |
 | **Vrac sortie: weighed before the BL exists** | **handled (007)** | see ADR 008 |
 | Ordinary incoming ticket has no BL; returns may have a manually entered BL | **handled** | the BL stays optional and is only shown for an incoming return |
+| Normal SORTIE must load its BL before products | **handled (012)** | the BL number is required at 2e balance; HFSQL lines are read-only, with a manual paper-BL exception if lookup fails or has no lines |
+| TIERS ticket has no BL or company locations | **handled (012)** | forged BL and location values are cleared; migration 009 also excludes legacy TIERS tickets from stock movements without rewriting them |
+| Veterinary or other non-weighed BL lines | **awaiting HFSQL value mapping** | export the HFSQL article facets first; weight and stock-line behavior is deferred until the company identifies the matching values |
+| N1/N2 article families and CASPM variants | **awaiting HFSQL name review** | do not merge products until an explicit family rule is approved from the article export |
 | Écart outside tolerance | **handled** | flagged (`ecart_ok = 0`); an `OPERATEUR` cannot close it, while a supervisor or admin can |
 | One BL delivered over several truck rotations (vrac) | **handled (008)** | rotations are grouped in an *enlèvement*; total = sum of nets; one BL for the total |
 | One BL delivered over several rotations, *not* vrac (BL known in advance) | **not handled** | each ticket is checked on its own; no remaining-quantity tracking per BL |

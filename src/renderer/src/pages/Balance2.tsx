@@ -4,9 +4,16 @@ import type { Location, OpUpdate } from '@shared/channels'
 import type { FormBlock } from '@shared/domain/capture'
 import { articleGroupForOperation } from '@shared/domain/article-catalog'
 import { asksFrom, asksTo, locationFieldsFor } from '@shared/domain/locations'
-import { allowsBl } from '@shared/domain/operation-fields'
+import { allowsBl, requiresBlForSecondWeigh } from '@shared/domain/operation-fields'
 import { isManualKind } from '@shared/domain/weighing'
-import type { Operation, OperationType, ProductLine, VracGroup, WeightSample } from '@shared/types'
+import type {
+  BlLookup,
+  Operation,
+  OperationType,
+  ProductLine,
+  VracGroup,
+  WeightSample
+} from '@shared/types'
 import { api, call, errorMessage, formatDateTime, formatKg, notifyTicketsChanged } from '../api'
 import CaptureBar, { type CaptureRequest } from '../components/CaptureBar'
 import ArticlePicker from '../components/ArticlePicker'
@@ -37,6 +44,7 @@ interface CompleteForm {
   vracProduct: string
   partnerName: string
   blNo: string
+  blDate: string
   locationFromId: string
   locationToId: string
   notes: string
@@ -54,6 +62,7 @@ function infoPatch(form: CompleteForm, type: OperationType): OpUpdate {
     isVrac: form.isVrac,
     partnerName: form.partnerName || null,
     blNo: allowsBl(type, form.isRetour) ? form.blNo || null : null,
+    blDate: allowsBl(type, form.isRetour) ? form.blDate || null : null,
     notes: form.notes || null
   }
   if (asksFrom(fields)) {
@@ -71,6 +80,7 @@ const EMPTY_FORM: CompleteForm = {
   vracProduct: '',
   partnerName: '',
   blNo: '',
+  blDate: '',
   locationFromId: '',
   locationToId: '',
   notes: ''
@@ -102,6 +112,9 @@ export default function Balance2({ type }: { type: OperationType }) {
   const [error, setError] = useState<string | null>(null)
   const [blBusy, setBlBusy] = useState(false)
   const [blNotice, setBlNotice] = useState<{ kind: 'ok' | 'warn'; text: string } | null>(null)
+  const [loadedBl, setLoadedBl] = useState<BlLookup | null>(null)
+  const [manualProducts, setManualProducts] = useState(false)
+  const [pendingBlReference, setPendingBlReference] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ id: number; html: string } | null>(null)
 
   const ticketRef = useRef<Operation | null>(null)
@@ -138,6 +151,13 @@ export default function Balance2({ type }: { type: OperationType }) {
       const current = ticketRef.current
       if (!current) return
       const vrac = form.isVrac
+      if (
+        requiresBlForSecondWeigh(type, form.isRetour, vrac) &&
+        (!form.blNo.trim() || pendingBlReference !== null)
+      ) {
+        setError(t('guide.block.needBl'))
+        return
+      }
       const clean = cleanLines(lines)
       if (vrac) {
         if (form.vracProduct.trim() === '') {
@@ -175,12 +195,13 @@ export default function Balance2({ type }: { type: OperationType }) {
         setSelected(updated)
         notifyTicketsChanged()
       } catch (err) {
-        setError(errorMessage(err))
+        const message = errorMessage(err)
+        setError(message === 'BL_REQUIRED' ? t('guide.block.needBl') : message)
       } finally {
         setBusy(false)
       }
     },
-    [lines, form, type, t]
+    [lines, form, type, t, pendingBlReference]
   )
 
   /** La 1re pesée est refaite : nouveau poids ; l'ancienne reste tracée côté base. */
@@ -229,6 +250,9 @@ export default function Balance2({ type }: { type: OperationType }) {
     setSelected(null)
     setLines([])
     setForm(EMPTY_FORM)
+    setLoadedBl(null)
+    setManualProducts(false)
+    setPendingBlReference(null)
     setShowNote(false)
     setError(null)
   }, [type])
@@ -251,18 +275,28 @@ export default function Balance2({ type }: { type: OperationType }) {
       vracProduct: op.isVrac ? (op.lines[0]?.productCode ?? '') : '',
       partnerName: op.partnerName ?? '',
       blNo: op.blNo ?? '',
+      blDate: op.blDate ?? '',
       locationFromId: op.locationFromId == null ? '' : String(op.locationFromId),
       locationToId: op.locationToId == null ? '' : String(op.locationToId),
       notes: op.notes ?? ''
     })
     setShowNote(false)
     // Au moins une ligne prête à remplir : le produit est la première chose à saisir ici.
+    const normalSortie = requiresBlForSecondWeigh(type, op.isRetour, op.isVrac)
     setLines(
-      op.lines.length > 0 ? op.lines.map((l) => ({ ...l })) : [{ productCode: '', quantityKg: 0 }]
+      normalSortie
+        ? []
+        : op.lines.length > 0
+          ? op.lines.map((l) => ({ ...l }))
+          : [{ productCode: '', quantityKg: 0 }]
     )
     setBlNotice(null)
+    setLoadedBl(null)
+    setManualProducts(false)
+    setPendingBlReference(null)
     setConfirmSave(false)
     setError(null)
+    if (normalSortie && op.blNo) void loadBl(op.blNo)
   }
 
   function back(): void {
@@ -272,6 +306,9 @@ export default function Balance2({ type }: { type: OperationType }) {
     setSelected(null)
     setLines([])
     setForm(EMPTY_FORM)
+    setLoadedBl(null)
+    setManualProducts(false)
+    setPendingBlReference(null)
     setShowNote(false)
     void list.reload()
   }
@@ -320,22 +357,36 @@ export default function Balance2({ type }: { type: OperationType }) {
     }
   }
 
-  /** Remplit les produits depuis le BL HFSQL : le commercial les a déjà saisis. */
-  async function loadBl(): Promise<void> {
-    const reference = form.blNo.trim()
+  /** Remplit les produits et la date depuis le BL HFSQL. */
+  async function loadBl(referenceInput = form.blNo): Promise<void> {
+    const reference = referenceInput.trim()
     if (reference === '') return
+    const normalSortie = requiresBlForSecondWeigh(type, form.isRetour, form.isVrac)
     setBlBusy(true)
     setBlNotice(null)
+    if (normalSortie) {
+      setLoadedBl(null)
+      setLines([])
+      setManualProducts(false)
+      setForm((current) => ({ ...current, blNo: reference, blDate: '', partnerName: '' }))
+    }
     try {
       const lookup = await call(api.bl.lookup(reference))
-      setForm((f) => ({ ...f, partnerName: f.partnerName || lookup.clientName || '' }))
+      setLoadedBl(normalSortie ? lookup : null)
+      setForm((f) => ({
+        ...f,
+        blNo: lookup.reference,
+        blDate: lookup.date ?? f.blDate,
+        partnerName: normalSortie ? (lookup.clientName ?? '') : (f.partnerName || lookup.clientName || '')
+      }))
       if (lookup.lines.length === 0) {
         setBlNotice({ kind: 'warn', text: t('bal2.blNoLines') })
+        if (normalSortie) setManualProducts(true)
         return
       }
       setLines(
         lookup.lines.map((line) => ({
-          productCode: line.code ?? line.name ?? '',
+          productCode: line.code?.trim() || line.name?.trim() || t('bal2.blUnknownProduct'),
           quantityKg: line.weightKg ?? 0
         }))
       )
@@ -354,10 +405,45 @@ export default function Balance2({ type }: { type: OperationType }) {
             }
       )
     } catch (err) {
-      setBlNotice({ kind: 'warn', text: errorMessage(err) })
+      const message = errorMessage(err)
+      const canUsePaper = /Aucun BL trouvé|HFSQL.*injoignable|API BL injoignable|\b(404|503)\b/i.test(
+        message
+      )
+      if (normalSortie) {
+        setLoadedBl(null)
+        setLines([])
+        setManualProducts(canUsePaper)
+      }
+      setBlNotice({
+        kind: 'warn',
+        text: !normalSortie
+          ? message
+          : /plusieurs années/i.test(message)
+            ? t('bal2.blLookupAmbiguous')
+            : canUsePaper
+              ? t('bal2.blLookupFailed')
+              : t('bal2.blLookupError')
+      })
     } finally {
       setBlBusy(false)
     }
+  }
+
+  function requestBlChangeConfirmation(reference: string): boolean {
+    if (!loadedBl || reference.trim() === loadedBl.reference) return false
+    setPendingBlReference(reference)
+    return true
+  }
+
+  async function confirmBlChange(): Promise<void> {
+    const reference = pendingBlReference?.trim() ?? ''
+    setPendingBlReference(null)
+    setLoadedBl(null)
+    setLines([])
+    setManualProducts(false)
+    setBlNotice(null)
+    setForm((current) => ({ ...current, blNo: reference, blDate: '', partnerName: '' }))
+    if (reference !== '') await loadBl(reference)
   }
 
   async function captureNow(request: CaptureRequest): Promise<void> {
@@ -370,8 +456,14 @@ export default function Balance2({ type }: { type: OperationType }) {
   const complete = selected?.second != null
   const closed = selected != null && selected.status !== 'OUVERTE'
   const incomplete = hasIncompleteLine(lines)
+  const normalSortie = requiresBlForSecondWeigh(type, form.isRetour, form.isVrac)
   const block: FormBlock | null = redo
     ? null
+    : normalSortie &&
+        (form.blNo.trim() === '' ||
+          pendingBlReference !== null ||
+          (loadedBl !== null && form.blNo.trim() !== loadedBl.reference))
+      ? 'needBl'
     : form.isVrac
       ? form.vracProduct.trim() === ''
         ? 'needVracProduct'
@@ -533,6 +625,44 @@ export default function Balance2({ type }: { type: OperationType }) {
             </div>
 
             <div className="form-col">
+              {normalSortie && (
+                <Field label={t('station.blNo')} hint={t('bal2.blFirstHint')}>
+                  <span className="field-action bl-first-action">
+                    <input
+                      className="bl-first-input"
+                      autoFocus
+                      autoComplete="off"
+                      dir="ltr"
+                      value={form.blNo}
+                      onChange={(event) =>
+                        setForm((current) => ({ ...current, blNo: event.target.value }))
+                      }
+                      onBlur={(event) => {
+                        requestBlChangeConfirmation(event.currentTarget.value)
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          if (!requestBlChangeConfirmation(form.blNo)) void loadBl()
+                        }
+                      }}
+                      disabled={busy || blBusy}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-lg"
+                      disabled={busy || blBusy || form.blNo.trim() === ''}
+                      onClick={() => {
+                        if (!requestBlChangeConfirmation(form.blNo)) void loadBl()
+                      }}
+                    >
+                      <Icon name="in" size={20} />
+                      {t('bal2.blLoad')}
+                    </button>
+                  </span>
+                </Field>
+              )}
+
               {form.isVrac ? (
                 <>
                   <Guide tone="info">{t('station.vrac.hint')}</Guide>
@@ -545,6 +675,82 @@ export default function Balance2({ type }: { type: OperationType }) {
                       disabled={busy}
                     />
                   </Field>
+                </>
+              ) : normalSortie ? (
+                <>
+                  {loadedBl && (
+                    <section className="bl-readonly" aria-label={t('bal2.blReference', { reference: loadedBl.reference })}>
+                      <div className="bl-summary">
+                        <strong dir="ltr">{t('bal2.blReference', { reference: loadedBl.reference })}</strong>
+                        {loadedBl.date && (
+                          <span dir="ltr">{t('station.blDate')}: {loadedBl.date}</span>
+                        )}
+                      </div>
+                      {loadedBl.lines.length > 0 && (
+                        <div className="bl-table-wrap">
+                          <table className="bl-table">
+                            <thead>
+                              <tr>
+                                <th>{t('bal2.blCode')}</th>
+                                <th>{t('bal2.blProduct')}</th>
+                                <th>{t('bal2.blQuantity')}</th>
+                                <th>{t('bal2.blWeight')}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {loadedBl.lines.map((line, index) => (
+                                <tr key={`${line.code ?? 'line'}-${index}`}>
+                                  <td dir="ltr"><span className="bl-code">{line.code || '—'}</span></td>
+                                  <td>{line.name || '—'}</td>
+                                  <td dir="ltr">
+                                    {line.quantity == null
+                                      ? '—'
+                                      : line.quantity.toLocaleString(lang === 'ar' ? 'ar-DZ' : 'fr-FR', { maximumFractionDigits: 3 })}
+                                  </td>
+                                  <td dir="ltr">{formatKg(line.weightKg, lang)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      <p className="bl-total">
+                        {loadedBl.weightComplete
+                          ? <>{t('bal2.blTotal')}: <strong dir="ltr">{formatKg(loadedBl.totalWeightKg, lang)}</strong></>
+                          : t('bal2.blWeightMissing', { count: loadedBl.unknownWeightLines })}
+                      </p>
+                    </section>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-secondary manual-products-toggle"
+                    aria-expanded={manualProducts}
+                    disabled={busy}
+                    onClick={() => setManualProducts((current) => !current)}
+                  >
+                    <Icon name={manualProducts ? 'check' : 'edit'} size={20} />
+                    {t('bal2.manualProducts')}
+                  </button>
+                  {manualProducts && (
+                    <>
+                      <p className="field-hint">{t('bal2.manualProductsHint')}</p>
+                      <Field label={t('station.blDate')} optional>
+                        <input
+                          type="date"
+                          dir="ltr"
+                          value={form.blDate}
+                          disabled={busy}
+                          onChange={(event) => setForm((current) => ({ ...current, blDate: event.target.value }))}
+                        />
+                      </Field>
+                      <ProductLines
+                        lines={lines.length > 0 ? lines : [{ productCode: '', quantityKg: 0 }]}
+                        onChange={setLines}
+                        disabled={busy}
+                        group={articleGroupForOperation(type, form.isRetour)}
+                      />
+                    </>
+                  )}
                 </>
               ) : (
                 <ProductLines
@@ -563,7 +769,7 @@ export default function Balance2({ type }: { type: OperationType }) {
                     onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
                   />
                 </Field>
-                {allowsBl(type, form.isRetour) && !form.isVrac && (
+                {allowsBl(type, form.isRetour) && !form.isVrac && !normalSortie && (
                   <Field label={t('station.blNo')} optional>
                     <span className="field-action">
                       <input
@@ -832,7 +1038,7 @@ export default function Balance2({ type }: { type: OperationType }) {
           label={redo ? t('bal.redoCapture') : t('capture.second')}
           sample={balance.sample}
           running={balance.running}
-          busy={busy}
+          busy={busy || blBusy}
           block={block}
           onCapture={(request) => void captureNow(request)}
           onCancel={redo ? stopRedo : undefined}
@@ -853,6 +1059,19 @@ export default function Balance2({ type }: { type: OperationType }) {
         onConfirm={() => void saveTicket()}
       >
         <p>{t('b2.confirmBody')}</p>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={pendingBlReference !== null}
+        title={t('bal2.blChangeTitle')}
+        confirmLabel={t('bal2.blChangeConfirm')}
+        onCancel={() => {
+          setPendingBlReference(null)
+          if (loadedBl) setForm((current) => ({ ...current, blNo: loadedBl.reference }))
+        }}
+        onConfirm={() => void confirmBlChange()}
+      >
+        <p>{t('bal2.blChangeBody')}</p>
       </ConfirmDialog>
 
       {preview && (

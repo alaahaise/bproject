@@ -10,6 +10,7 @@
  */
 import type { Lang, Location } from '@shared/channels'
 import { asksFrom, asksTo, locationFieldsFor } from '@shared/domain/locations'
+import { allowsBl } from '@shared/domain/operation-fields'
 import { isManualKind } from '@shared/domain/weighing'
 import type { Operation, OperationType } from '@shared/types'
 
@@ -303,7 +304,7 @@ export function buildTicketHtml(
   ${row(t.driver, op.driverName)}
   ${linesBlock}
   ${row(t.partner, op.partnerName)}
-  ${row(t.bl, op.blNo)}
+  ${allowsBl(op.type, op.isRetour) ? row(t.bl, op.blNo) : ''}
   ${asksFrom(fields) ? row(t.from, place(op.locationFromId)) : ''}
   ${asksTo(fields) ? row(t.to, place(op.locationToId)) : ''}
   ${weighing(op.first, 1)}

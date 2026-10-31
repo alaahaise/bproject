@@ -14,6 +14,7 @@ import retour005 from '../../../migrations/005_retour.sql?raw'
 import listIndexes006 from '../../../migrations/006_ticket_list_indexes.sql?raw'
 import vrac007 from '../../../migrations/007_vrac.sql?raw'
 import vracGroups008 from '../../../migrations/008_vrac_groups.sql?raw'
+import tiersNoStock009 from '../../../migrations/009_tiers_no_stock.sql?raw'
 
 const MIGRATIONS: ReadonlyArray<{ version: string; sql: string }> = [
   { version: '001_init', sql: init001 },
@@ -23,7 +24,8 @@ const MIGRATIONS: ReadonlyArray<{ version: string; sql: string }> = [
   { version: '005_retour', sql: retour005 },
   { version: '006_ticket_list_indexes', sql: listIndexes006 },
   { version: '007_vrac', sql: vrac007 },
-  { version: '008_vrac_groups', sql: vracGroups008 }
+  { version: '008_vrac_groups', sql: vracGroups008 },
+  { version: '009_tiers_no_stock', sql: tiersNoStock009 }
 ]
 
 export async function migrate(cfg: DbConfig): Promise<string[]> {

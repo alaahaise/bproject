@@ -11,7 +11,8 @@ export const CENTRAL_LOCATION_CODE = 'STOCK'
  *  - SORTIE    : aucun lieu. La marchandise de la société part à l'extérieur.
  *                Un RETOUR (marchandise renvoyée, ex. un CMV au fournisseur) sort
  *                d'un lieu précis de la société : le lieu de départ est demandé.
- *  - TRANSFERT / TIERS : inchangés, les deux lieux restent libres.
+ *  - TRANSFERT : les deux lieux restent libres.
+ *  - TIERS : aucun lieu n'est rattaché à la société.
  */
 export type LocationFields = 'none' | 'from' | 'to' | 'both'
 
@@ -21,6 +22,8 @@ export function locationFieldsFor(type: OperationType, isRetour: boolean): Locat
       return 'to'
     case 'SORTIE':
       return isRetour ? 'from' : 'none'
+    case 'TIERS':
+      return 'none'
     default:
       return 'both'
   }
@@ -51,6 +54,7 @@ export function resolveLocations(input: {
   const { type, isRetour, fromId, toId, centralId } = input
   const fields = locationFieldsFor(type, isRetour)
   if (fields === 'both') return { fromId, toId }
+  if (type === 'TIERS') return { fromId: null, toId: null }
 
   if (type === 'ENTREE') return { fromId: null, toId: toId ?? centralId }
   // SORTIE : la marchandise quitte la société.

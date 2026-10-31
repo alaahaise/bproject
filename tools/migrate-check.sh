@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Vérifie que migrations/001_init.sql s'exécute vraiment.
+# Vérifie toute la chaîne de migrations SQL sur un serveur jetable.
 # Instance jetable : datadir temporaire, pas de TCP, socket dédiée — le serveur
 # de production de la machine n'est ni touché ni concurrencé.
 set -u
 
-ROOT=/mnt/d/balance-management
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 T=$(mktemp -d)
 trap 'kill %1 2>/dev/null; sleep 1; rm -rf "$T"' EXIT
 
@@ -27,12 +28,14 @@ mysql --socket="$T/m.sock" -uroot -e "SELECT VERSION() AS version"
 mysql --socket="$T/m.sock" -uroot --default-character-set=utf8mb4 \
   -e "CREATE DATABASE probe CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 
-if mysql --socket="$T/m.sock" -uroot --default-character-set=utf8mb4 probe < "$ROOT/migrations/001_init.sql"; then
-  echo "MIGRATION_OK"
-else
-  echo "MIGRATION_FAILED"
-  exit 1
-fi
+for migration in "$ROOT"/migrations/[0-9][0-9][0-9]_*.sql; do
+  echo "Applying $(basename "$migration")"
+  if ! mysql --socket="$T/m.sock" -uroot --default-character-set=utf8mb4 probe < "$migration"; then
+    echo "MIGRATION_FAILED: $(basename "$migration")"
+    exit 1
+  fi
+done
+echo "MIGRATION_OK"
 
 mysql --socket="$T/m.sock" -uroot --default-character-set=utf8mb4 probe -e "
   SELECT COUNT(*) AS tables FROM information_schema.tables WHERE table_schema = 'probe';

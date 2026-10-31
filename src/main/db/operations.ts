@@ -18,7 +18,7 @@ import type {
   OpUpdate
 } from '@shared/channels'
 import { CENTRAL_LOCATION_CODE, resolveLocations } from '@shared/domain/locations'
-import { allowsBl } from '@shared/domain/operation-fields'
+import { allowsBl, requiresBlForSecondWeigh } from '@shared/domain/operation-fields'
 import { pageWindow } from '@shared/domain/paging'
 import { containsPattern, searchKey } from '@shared/domain/search'
 import { buildVracLine, canBeVrac } from '@shared/domain/vrac'
@@ -286,7 +286,17 @@ export async function capture(
     // Vrac : pas de lignes saisies, le produit n'a pas de quantité avant la pesée.
     // La ligne est écrite plus bas, une fois le net connu.
     const isVrac = Boolean(Number(row.is_vrac ?? 0))
-
+    if (
+      hasFirst &&
+      requiresBlForSecondWeigh(
+        row.type as OperationType,
+        Boolean(Number(row.is_retour ?? 0)),
+        isVrac
+      ) &&
+      !String(row.bl_no ?? '').trim()
+    ) {
+      throw new Error('BL_REQUIRED')
+    }
     // Enregistrées dans le même geste que la pesée : le total ci-dessous ne peut
     // pas être calculé sur une liste périmée restée à l'écran.
     if (!isVrac) await replaceLines(conn, input.operationId, input.lines)

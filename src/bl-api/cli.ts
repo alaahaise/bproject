@@ -14,7 +14,9 @@ import { loadConfig, maskConnectionString } from './config'
 import { createDb } from './db'
 import { createBlService } from './bl-service'
 import { createSchema, type SchemaMap } from './schema'
+import { combineArticleRows, formatArticlesCsv, summarizeArticleFacets } from './articles-export'
 import { isAmbiguous } from './types'
+import { int } from './sql'
 
 const DEFAULT_BL = 'BL26-05255'
 
@@ -45,8 +47,8 @@ function section(
 
 async function run(): Promise<number> {
   const [command = 'probe', reference = DEFAULT_BL] = process.argv.slice(2)
-  if (command !== 'probe' && command !== 'export') {
-    console.error('Usage : bl-cli <probe|export> [numéro de BL]')
+  if (command !== 'probe' && command !== 'export' && command !== 'articles') {
+    console.error('Usage : bl-cli <probe|export|articles> [numéro de BL]')
     return 2
   }
 
@@ -57,6 +59,37 @@ async function run(): Promise<number> {
 
   try {
     console.log(`Connexion : ${maskConnectionString(config.connectionString)}`)
+    if (command === 'articles') {
+      // HFSQL exposes both text columns as SQL_CHAR. Their raw views preserve
+      // their different encodings (Reference: Windows-1252; Libelle: UTF-16LE)
+      // before node-odbc can replace or misread characters. The CSV stays text.
+      const articles = await db.query(
+        `SELECT IDArticle,
+                CAST(Reference AS BINARY(50)) AS Reference,
+                CAST(Libelle AS BINARY(250)) AS Libelle,
+                Famille, Sous_Famille, Classification, Categorie,
+                Unite_Mesure, Poids_Brut
+           FROM Articles
+          ORDER BY IDArticle`
+      )
+      const counts = await db.query(
+        `SELECT IDArticle AS articleId, COUNT(*) AS lineCount
+           FROM Ligne_MT
+          WHERE Type = ${int(23)}
+            AND (Sous_Table = 0 OR Sous_Table IS NULL)
+          GROUP BY IDArticle`
+      )
+      const rows = combineArticleRows(articles, counts)
+      const outputDirectory = join(process.cwd(), 'samples')
+      mkdirSync(outputDirectory, { recursive: true })
+      const outputPath = join(outputDirectory, 'articles.csv')
+      writeFileSync(outputPath, formatArticlesCsv(rows), 'utf8')
+      console.log(`Exporté : ${rows.length} articles → ${outputPath}`)
+      console.log('Valeurs distinctes (nombre d’articles et trois exemples) :')
+      console.log(summarizeArticleFacets(rows))
+      return 0
+    }
+
     const result = await service.getBl(parseBlInput(reference), { full: command === 'export' })
 
     if (!result) {

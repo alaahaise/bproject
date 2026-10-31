@@ -15,9 +15,9 @@ describe('locationFieldsFor', () => {
     expect(locationFieldsFor('SORTIE', true)).toBe('from')
   })
 
-  it('TRANSFERT et TIERS gardent les deux lieux', () => {
+  it('TRANSFERT garde les deux lieux, TIERS ne demande aucun lieu', () => {
     expect(locationFieldsFor('TRANSFERT', false)).toBe('both')
-    expect(locationFieldsFor('TIERS', false)).toBe('both')
+    expect(locationFieldsFor('TIERS', false)).toBe('none')
   })
 
   it('asksFrom / asksTo suivent le champ', () => {
@@ -67,12 +67,14 @@ describe('resolveLocations', () => {
     })
   })
 
-  it('TRANSFERT et TIERS : rien n’est modifié', () => {
+  it('TRANSFERT garde les lieux, TIERS vide toujours les lieux envoyés par le client', () => {
     expect(resolveLocations({ ...base, type: 'TRANSFERT', fromId: 2, toId: 3 })).toEqual({
       fromId: 2,
       toId: 3
     })
-    expect(resolveLocations({ ...base, type: 'TIERS' })).toEqual({ fromId: null, toId: null })
+    expect(
+      resolveLocations({ ...base, type: 'TIERS', fromId: UNIT_A, toId: 3 })
+    ).toEqual({ fromId: null, toId: null })
   })
 
   it("sans stock central dans le référentiel, n'invente aucun lieu", () => {

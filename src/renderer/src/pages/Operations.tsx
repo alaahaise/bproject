@@ -570,10 +570,12 @@ export default function Operations({ type }: { type: OperationType }) {
                 <dt>{t('station.partner')}</dt>
                 <dd>{selected.partnerName || '—'}</dd>
               </div>
-              <div>
-                <dt>{t('station.blNo')}</dt>
-                <dd dir="ltr">{selected.blNo || '—'}</dd>
-              </div>
+              {allowsBl(selected.type, selected.isRetour) && (
+                <div>
+                  <dt>{t('station.blNo')}</dt>
+                  <dd dir="ltr">{selected.blNo || '—'}</dd>
+                </div>
+              )}
               <div>
                 <dt>{t('ops.date')}</dt>
                 <dd dir="ltr">{formatDateTime(selected.createdAt)}</dd>

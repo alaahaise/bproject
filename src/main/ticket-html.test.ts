@@ -117,6 +117,24 @@ describe('ticket HTML', () => {
     expect(html).not.toContain('Origine')
   })
 
+  it('n’imprime ni BL ni lieu sur un ticket TIERS même si la ligne contient des valeurs', () => {
+    const html = buildTicketHtml(
+      ticket({
+        type: 'TIERS',
+        blNo: 'BL-EXTERNE',
+        blDate: '2026-10-31',
+        locationFromId: 2,
+        locationToId: 2
+      }),
+      opts
+    )
+
+    expect(html).not.toContain('N° BL')
+    expect(html).not.toContain('BL-EXTERNE')
+    expect(html).not.toContain('Origine')
+    expect(html).not.toContain('Destination')
+  })
+
   it("n'imprime ni origine ni destination sur une sortie", () => {
     const html = buildTicketHtml(
       ticket({ type: 'SORTIE', locationFromId: 2, locationToId: null }),

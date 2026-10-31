@@ -8,7 +8,7 @@
  */
 
 /** Blocages qui viennent de la saisie du ticket, décidés par l'écran. */
-export type FormBlock = 'incompleteLines' | 'needLines' | 'needVracProduct' | 'staleTicket'
+export type FormBlock = 'incompleteLines' | 'needLines' | 'needVracProduct' | 'needBl' | 'staleTicket'
 
 export type CaptureBlock =
   FormBlock | 'busy' | 'balanceOff' | 'noSample' | 'unstable' | 'manualEmpty'

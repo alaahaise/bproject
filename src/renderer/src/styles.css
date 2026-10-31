@@ -2338,6 +2338,79 @@ td.num {
   min-width: 0;
 }
 
+.bl-first-input {
+  min-height: 64px;
+  padding-inline: 16px;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: 0.025em;
+}
+.bl-first-action > .btn {
+  flex: 0 0 auto;
+}
+.bl-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 2px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background: var(--accent-tint);
+}
+.bl-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 1.0625rem;
+}
+.bl-summary strong {
+  color: var(--accent-ink);
+}
+.bl-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.bl-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: start;
+}
+.bl-table th,
+.bl-table td {
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--line);
+}
+.bl-table th {
+  color: var(--ink-3);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+.bl-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.bl-code {
+  display: inline-block;
+  min-width: 3.25rem;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: var(--font-digits);
+  font-weight: 800;
+  text-align: center;
+}
+.bl-total {
+  align-self: flex-end;
+  font-weight: 700;
+}
+.manual-products-toggle {
+  align-self: flex-start;
+  min-height: 52px;
+}
+
 /* Case à cocher de la barre de filtres, même hauteur que les champs. */
 .inline-check {
   display: inline-flex;

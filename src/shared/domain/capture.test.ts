@@ -25,6 +25,10 @@ describe('captureBlock', () => {
     expect(captureBlock(state)).toBe('incompleteLines')
   })
 
+  it('bloque la 2e pesée d’une sortie tant que le numéro de BL manque', () => {
+    expect(captureBlock({ ...READY, formBlock: 'needBl' })).toBe('needBl')
+  })
+
   it('distingue balance arrêtée, balance muette et poids instable', () => {
     expect(captureBlock({ ...READY, running: false, hasSample: false })).toBe('balanceOff')
     expect(captureBlock({ ...READY, hasSample: false })).toBe('noSample')

@@ -88,6 +88,77 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
     expect(corrected.blNo).toBeNull()
   })
 
+  it('TIERS stores no BL and no locations even when create and update send them', async () => {
+    const [locations] = await pool.getPool().query<RowDataPacket[]>(
+      'SELECT id, code FROM locations WHERE code IN (?, ?)',
+      ['STOCK', 'UNITE_A']
+    )
+    const stockId = Number(locations.find((location) => location.code === 'STOCK')?.id)
+    const unitId = Number(locations.find((location) => location.code === 'UNITE_A')?.id)
+
+    const ticket = await operations.create(
+      {
+        type: 'TIERS',
+        blNo: 'BL-EXTERNAL',
+        blDate: '2026-10-31',
+        locationFromId: stockId,
+        locationToId: unitId
+      },
+      user
+    )
+
+    await operations.update(
+      ticket.id,
+      {
+        blNo: 'BL-UPDATE',
+        blDate: '2026-10-30',
+        locationFromId: stockId,
+        locationToId: unitId
+      },
+      user
+    )
+
+    const [stored] = await pool.getPool().query<RowDataPacket[]>(
+      `SELECT bl_no, bl_date, location_from_id, location_to_id
+         FROM operations WHERE id = ?`,
+      [ticket.id]
+    )
+    expect(stored[0]).toMatchObject({
+      bl_no: null,
+      bl_date: null,
+      location_from_id: null,
+      location_to_id: null
+    })
+  })
+
+  it('v_stock_moves excludes legacy TIERS rows even when both locations are populated', async () => {
+    const [locations] = await pool.getPool().query<RowDataPacket[]>(
+      'SELECT id, code FROM locations WHERE code IN (?, ?)',
+      ['STOCK', 'UNITE_A']
+    )
+    const stockId = Number(locations.find((location) => location.code === 'STOCK')?.id)
+    const unitId = Number(locations.find((location) => location.code === 'UNITE_A')?.id)
+    const ticket = await operations.create({ type: 'TIERS' }, user)
+
+    // Simulate historical evidence from before TIERS was removed from stock.
+    await pool.getPool().query(
+      `UPDATE operations
+          SET status = 'FERMEE', location_from_id = ?, location_to_id = ?, net_weight = 5000
+        WHERE id = ?`,
+      [stockId, unitId, ticket.id]
+    )
+    await pool.getPool().query(
+      `INSERT INTO operation_lines (operation_id, position, product_id, product_code, quantity_kg)
+       VALUES (?, 1, NULL, 'EXTERNE', 5000)`,
+      [ticket.id]
+    )
+
+    const [moves] = await pool
+      .getPool()
+      .query<RowDataPacket[]>('SELECT * FROM v_stock_moves WHERE operation_id = ?', [ticket.id])
+    expect(moves).toHaveLength(0)
+  })
+
   it('changes a password only after verifying the current password', async () => {
     const [rows] = await pool.getPool().query<RowDataPacket[]>(
       'SELECT password_hash FROM users WHERE id = ?',
@@ -211,7 +282,7 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
   })
 
   it('somme les produits envoyés avec la 2e pesée', async () => {
-    const ticket = await operations.create({ type: 'SORTIE' }, user)
+    const ticket = await operations.create({ type: 'SORTIE', blNo: 'BL-SORTIE-TEST' }, user)
     await operations.capture({ operationId: ticket.id, weight: 4000, isManual: false }, user, 'p')
 
     const done = await operations.capture(
@@ -231,6 +302,35 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
     expect(done.weightSupposed).toBe(5000)
     expect(done.ecart).toBe(1000)
     expect(done.lines.map((l) => l.productCode)).toEqual(['CMV X', 'CMV Y'])
+  })
+
+  it('refuse la 2e pesée d’une sortie ordinaire sans BL, puis l’accepte avec le BL saisi', async () => {
+    const ticket = await operations.create(
+      { type: 'SORTIE', lines: [{ productCode: 'ALIMENT', quantityKg: 6000 }] },
+      user
+    )
+    await operations.capture({ operationId: ticket.id, weight: 5000, isManual: false }, user, 'p')
+
+    await expect(
+      operations.capture({ operationId: ticket.id, weight: 11000, isManual: false }, user, 'p')
+    ).rejects.toThrow(/BL/i)
+
+    const pending = await operations.getById(ticket.id)
+    expect(pending?.second).toBeNull()
+
+    await operations.update(
+      ticket.id,
+      { blNo: 'BL-PAPIER-123', blDate: '2026-10-31' },
+      user
+    )
+    const done = await operations.capture(
+      { operationId: ticket.id, weight: 11000, isManual: false },
+      user,
+      'p'
+    )
+    expect(done.blNo).toBe('BL-PAPIER-123')
+    expect(done.blDate).toBe('2026-10-31')
+    expect(done.netWeight).toBe(6000)
   })
 
   it("refuse d'enregistrer un ticket qui n'a qu'une pesée", async () => {
@@ -291,7 +391,7 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
       'p'
     )
 
-    const lightFirst = await operations.create({ type: 'SORTIE' }, user)
+    const lightFirst = await operations.create({ type: 'SORTIE', blNo: 'BL-LIGHT-FIRST' }, user)
     await operations.capture(
       { operationId: lightFirst.id, weight: 4000, isManual: false },
       user,
@@ -313,7 +413,11 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
   it('le camion qui revient peser après chargement donne toujours haut moins bas', async () => {
     // Pesé une 1re fois CHARGÉ par oubli de la pesée à vide, puis revenu à vide.
     const ticket = await operations.create(
-      { type: 'SORTIE', lines: [{ productCode: 'CIMENT', quantityKg: 5000 }] },
+      {
+        type: 'SORTIE',
+        blNo: 'BL-RETURN-WEIGH',
+        lines: [{ productCode: 'CIMENT', quantityKg: 5000 }]
+      },
       user
     )
     await operations.capture({ operationId: ticket.id, weight: 9000, isManual: false }, user, 'p')
@@ -341,6 +445,22 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
     await expect(
       operations.capture({ operationId: ticket.id, weight: 3000, isManual: false }, user, 'p')
     ).rejects.toThrow(/déjà faites/)
+  })
+
+  it('permits TIERS to complete both weighings without product lines or a declared quantity', async () => {
+    const ticket = await operations.create({ type: 'TIERS' }, user)
+    await operations.capture({ operationId: ticket.id, weight: 18_000, isManual: false }, user, 'p')
+
+    const done = await operations.capture(
+      { operationId: ticket.id, weight: 8_000, isManual: false },
+      user,
+      'p'
+    )
+
+    expect(done.netWeight).toBe(10_000)
+    expect(done.weightSupposed).toBeNull()
+    expect(done.ecart).toBeNull()
+    expect(done.lines).toEqual([])
   })
 
   it('annule un ticket avec un motif tracé', async () => {
@@ -407,7 +527,7 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
   })
 
   it('garde la trace « manuelle » sur le ticket (1re et 2e pesée)', async () => {
-    const ticket = await operations.create({ type: 'SORTIE' }, user)
+    const ticket = await operations.create({ type: 'SORTIE', blNo: 'BL-MANUAL-WEIGH' }, user)
     const afterFirst = await operations.capture(
       { operationId: ticket.id, weight: 4000, isManual: true, raw: 'MANUEL' },
       user,
@@ -430,7 +550,7 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
   })
 
   it("refait la 1re pesée : le ticket prend le nouveau poids, l'ancien reste tracé", async () => {
-    const ticket = await operations.create({ type: 'SORTIE' }, user)
+    const ticket = await operations.create({ type: 'SORTIE', blNo: 'BL-REDO-WEIGH' }, user)
     await operations.capture({ operationId: ticket.id, weight: 4000, isManual: false }, user, 'p')
 
     const redone = await operations.redoFirst(
@@ -481,7 +601,7 @@ describe.skipIf(!enabled)('dépôt des opérations (base réelle)', () => {
   })
 
   it('refuse de refaire la 1re pesée sans pesée, ou une fois la 2e faite', async () => {
-    const empty = await operations.create({ type: 'SORTIE' }, user)
+    const empty = await operations.create({ type: 'SORTIE', blNo: 'BL-REDO-FINAL' }, user)
     await expect(
       operations.redoFirst({ operationId: empty.id, weight: 1, isManual: false }, user, 'p')
     ).rejects.toThrow(/Aucune 1re pesée/)

@@ -25,7 +25,8 @@
     "rebuild": "electron-builder install-app-deps",
     "bl:start": "electron-vite build && node out/main/bl-api.js",
     "bl:probe": "electron-vite build && node out/main/bl-cli.js probe",
-    "bl:export": "electron-vite build && node out/main/bl-cli.js export"
+    "bl:export": "electron-vite build && node out/main/bl-cli.js export",
+    "bl:articles": "electron-vite build && node out/main/bl-cli.js articles"
   },
   "dependencies": {
     "dotenv": "^18.0.8",
