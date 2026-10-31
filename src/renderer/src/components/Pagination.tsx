@@ -29,12 +29,17 @@ export default function Pagination({
   const to = Math.min(page * pageSize, total)
 
   return (
-    <nav className={`pagination${loading ? ' loading' : ''}`} aria-label={t('page.label')}>
+    <nav className={`pagination${loading ? ' is-loading' : ''}`} aria-label={t('page.label')}>
       <span className="muted">{t('page.range', { from, to, total })}</span>
 
       {pages > 1 && (
         <div className="pages">
-          <button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={page <= 1}
+            onClick={() => onPage(page - 1)}
+          >
             {t('page.prev')}
           </button>
           {pageItems(page, pages).map((item, index) =>
@@ -46,7 +51,7 @@ export default function Pagination({
               <button
                 key={item}
                 type="button"
-                className={item === page ? 'primary' : undefined}
+                className={item === page ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}
                 aria-current={item === page ? 'page' : undefined}
                 onClick={() => onPage(item)}
               >
@@ -54,7 +59,12 @@ export default function Pagination({
               </button>
             )
           )}
-          <button type="button" disabled={page >= pages} onClick={() => onPage(page + 1)}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={page >= pages}
+            onClick={() => onPage(page + 1)}
+          >
             {t('page.next')}
           </button>
         </div>

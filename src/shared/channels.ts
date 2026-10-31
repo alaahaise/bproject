@@ -11,6 +11,8 @@ import type {
   Operation,
   OperationStatus,
   OperationType,
+  ArticleCatalogGroup,
+  ArticleOption,
   ProductLine,
   SessionUser,
   TicketDraft,
@@ -54,6 +56,7 @@ export const CH = {
   vracPrint: 'vrac:print',
   refLocations: 'ref:locations',
   blLookup: 'bl:lookup',
+  blArticles: 'bl:articles',
   balanceStart: 'balance:start',
   balanceStop: 'balance:stop',
   balanceStatus: 'balance:status',
@@ -268,6 +271,8 @@ export interface AppApi {
   bl: {
     /** Lit un BL par son numéro (formats acceptés par l'API). */
     lookup(number: string): Promise<BlLookup>
+    /** Cherche les articles HFSQL utilisables comme produits. */
+    searchArticles(query: string, group: ArticleCatalogGroup): Promise<ArticleOption[]>
   }
   balance: {
     start(): Promise<BalanceStatus>

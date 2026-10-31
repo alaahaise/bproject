@@ -1,7 +1,11 @@
 import { useState, type FormEvent } from 'react'
 import { api, call, errorMessage } from '../api'
 import { useI18n } from '../i18n'
+import Field from './Field'
+import Guide from './Guide'
+import Icon from './Icon'
 
+/** Changement du mot de passe du compte connecté : ancien mot de passe exigé. */
 export default function PasswordForm() {
   const { t } = useI18n()
   const [currentPassword, setCurrentPassword] = useState('')
@@ -28,38 +32,49 @@ export default function PasswordForm() {
   }
 
   return (
-    <section className="card">
+    <form className="panel settings-card" onSubmit={submit}>
       <h2>{t('settings.password')}</h2>
-      <form className="grid" onSubmit={submit}>
-        <label>
-          {t('settings.currentPassword')}
+      <div className="pair">
+        <Field label={t('settings.currentPassword')}>
           <input
             type="password"
             autoComplete="current-password"
             value={currentPassword}
-            onChange={(e) => setCurrentPassword(e.target.value)}
-            required
+            onChange={(e) => {
+              setCurrentPassword(e.target.value)
+              setSaved(false)
+            }}
           />
-        </label>
-        <label>
-          {t('settings.newPassword')}
+        </Field>
+        <Field label={t('settings.newPassword')}>
           <input
             type="password"
             autoComplete="new-password"
-            minLength={8}
             value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            required
+            onChange={(e) => {
+              setNewPassword(e.target.value)
+              setSaved(false)
+            }}
           />
-        </label>
-        <div className="row">
-          <button type="submit" disabled={busy || newPassword.length < 8}>
-            {t('common.save')}
-          </button>
-          {saved && <span className="ok">{t('settings.passwordChanged')}</span>}
-        </div>
-      </form>
-      {error && <p className="error">{error}</p>}
-    </section>
+        </Field>
+      </div>
+      <div className="button-row">
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={busy || currentPassword === '' || newPassword.length < 8}
+        >
+          <Icon name="check" size={20} />
+          {t('common.save')}
+        </button>
+        {saved && (
+          <span className="chip chip-done">
+            <Icon name="check" size={16} />
+            {t('settings.passwordChanged')}
+          </span>
+        )}
+      </div>
+      {error && <Guide tone="error">{error}</Guide>}
+    </form>
   )
 }

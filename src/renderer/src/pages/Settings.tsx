@@ -1,10 +1,13 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import type { AppStatus } from '@shared/channels'
 import { api, call, errorMessage } from '../api'
-import { useI18n } from '../i18n'
 import BalanceForm from '../components/BalanceForm'
 import DbForm from '../components/DbForm'
+import Field from '../components/Field'
+import Guide from '../components/Guide'
+import Icon from '../components/Icon'
 import PasswordForm from '../components/PasswordForm'
+import { useI18n } from '../i18n'
 
 /** Nom de la société : c'est lui qui s'imprime en tête du ticket. */
 function CompanyForm() {
@@ -34,30 +37,35 @@ function CompanyForm() {
   }
 
   return (
-    <section className="card">
+    <form className="panel settings-card" onSubmit={submit}>
       <h2>{t('settings.company')}</h2>
-      <form className="row" onSubmit={submit}>
-        <label style={{ flex: 1 }}>
-          {t('settings.companyName')}
-          <input
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value)
-              setSaved(false)
-            }}
-          />
-        </label>
-        <button type="submit" disabled={name.trim().length === 0}>
+      <Field label={t('settings.companyName')}>
+        <input
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value)
+            setSaved(false)
+          }}
+        />
+      </Field>
+      <div className="button-row">
+        <button type="submit" className="btn btn-primary" disabled={name.trim().length === 0}>
+          <Icon name="check" size={20} />
           {t('common.save')}
         </button>
-        {saved && <span className="ok">{t('settings.saved')}</span>}
-      </form>
-      {error && <p className="error">{error}</p>}
-    </section>
+        {saved && (
+          <span className="chip chip-done">
+            <Icon name="check" size={16} />
+            {t('settings.saved')}
+          </span>
+        )}
+      </div>
+      {error && <Guide tone="error">{error}</Guide>}
+    </form>
   )
 }
 
-/** Adresse du service BL (API Node/HFSQL) utilisé par la 2e balance. */
+/** Adresse du service BL (HFSQL) : vide = adresse locale par défaut. */
 function BlApiForm() {
   const { t } = useI18n()
   const [url, setUrl] = useState('')
@@ -76,39 +84,42 @@ function BlApiForm() {
     setSaved(false)
     setError(null)
     try {
-      const result = await call(api.settings.saveBlApi(url))
-      if (result.ok) {
-        setUrl(url.trim())
-        setSaved(true)
-      } else {
-        setError(result.message)
-      }
+      const result = await call(api.settings.saveBlApi(url.trim()))
+      if (result.ok) setSaved(true)
+      else setError(result.message)
     } catch (err) {
       setError(errorMessage(err))
     }
   }
 
   return (
-    <section className="card">
+    <form className="panel settings-card" onSubmit={submit}>
       <h2>{t('settings.blApi')}</h2>
-      <p className="muted">{t('settings.blApiHint')}</p>
-      <form className="row" onSubmit={submit}>
-        <label style={{ flex: 1 }}>
-          {t('settings.blApiUrl')}
-          <input
-            value={url}
-            placeholder="http://127.0.0.1:3100"
-            onChange={(e) => {
-              setUrl(e.target.value)
-              setSaved(false)
-            }}
-          />
-        </label>
-        <button type="submit">{t('common.save')}</button>
-        {saved && <span className="ok">{t('settings.saved')}</span>}
-      </form>
-      {error && <p className="error">{error}</p>}
-    </section>
+      <Field label={t('settings.blApiUrl')} hint={t('settings.blApiHint')}>
+        <input
+          dir="ltr"
+          autoComplete="off"
+          value={url}
+          onChange={(e) => {
+            setUrl(e.target.value)
+            setSaved(false)
+          }}
+        />
+      </Field>
+      <div className="button-row">
+        <button type="submit" className="btn btn-primary">
+          <Icon name="check" size={20} />
+          {t('common.save')}
+        </button>
+        {saved && (
+          <span className="chip chip-done">
+            <Icon name="check" size={16} />
+            {t('settings.saved')}
+          </span>
+        )}
+      </div>
+      {error && <Guide tone="error">{error}</Guide>}
+    </form>
   )
 }
 
@@ -133,32 +144,22 @@ export default function Settings() {
 
   return (
     <div className="settings">
-      <h2>{t('settings.title')}</h2>
+      <header className="settings-head">
+        <h1>{t('settings.title')}</h1>
+        <span className={status?.dbConnected ? 'chip chip-done' : 'chip chip-waiting'}>
+          {t('db.title')} : {dbLabel}
+        </span>
+      </header>
 
-      <p className={status?.dbConnected ? 'badge ok' : 'badge'}>
-        {t('db.title')} : {dbLabel}
-      </p>
-      <p className="warn-box">{t('settings.adminWarning')}</p>
+      <Guide tone="warn">{t('settings.adminWarning')}</Guide>
 
-      <details className="settings-group">
-        <summary>{t('db.title')}</summary>
-        <DbForm onConnected={() => void api.app.status().then(setStatus)} />
-      </details>
-      <details className="settings-group">
-        <summary>{t('bal.title')}</summary>
-        <BalanceForm />
-      </details>
-      <details className="settings-group">
-        <summary>{t('settings.blApi')}</summary>
-        <BlApiForm />
-      </details>
-      <details className="settings-group">
-        <summary>{t('settings.accountAndCompany')}</summary>
-        <PasswordForm />
-        {status?.dbConnected && <CompanyForm />}
-      </details>
+      <DbForm onConnected={() => void api.app.status().then(setStatus)} />
+      <BalanceForm />
+      {status?.dbConnected && <CompanyForm />}
+      {status?.dbConnected && <PasswordForm />}
+      {status?.dbConnected && <BlApiForm />}
 
-      <section className="card">
+      <section className="panel settings-card">
         <h2>{t('settings.app')}</h2>
         <p className="muted">
           {t('settings.version')} : 0.1.0 — {t('app.station')} : {status?.balance.port ?? '—'}

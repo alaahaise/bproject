@@ -2,10 +2,14 @@ import { useCallback, useEffect, useState } from 'react'
 import { closeBlocker, compareBlToNet, isGroupBlPending } from '@shared/domain/vrac'
 import type { VracGroup, VracGroupStatus } from '@shared/types'
 import { api, call, errorMessage, formatDateTime, formatKg } from '../api'
+import ConfirmDialog from '../components/ConfirmDialog'
+import Guide from '../components/Guide'
+import Icon from '../components/Icon'
+import Segmented from '../components/Segmented'
 import TicketPreview from '../components/TicketPreview'
 import { useI18n } from '../i18n'
 
-type StatusFilter = VracGroupStatus | ''
+type StatusFilter = VracGroupStatus | 'ALL'
 
 /** Ce que la dernière vérification a trouvé dans HFSQL pour le BL tapé. */
 interface BlDraft {
@@ -32,6 +36,7 @@ export default function VracGroups() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<{ kind: 'ok' | 'warn'; text: string } | null>(null)
+  const [confirmClose, setConfirmClose] = useState<VracGroup | null>(null)
   const [preview, setPreview] = useState<{ id: number; html: string } | null>(null)
 
   const reload = useCallback(async () => {
@@ -39,7 +44,7 @@ export default function VracGroups() {
       setGroups(
         await call(
           api.vrac.groups({
-            status: status === '' ? null : status,
+            status: status === 'ALL' ? null : status,
             blPending: blPendingOnly,
             search: search.trim() || null
           })
@@ -76,7 +81,6 @@ export default function VracGroups() {
 
   const close = (group: VracGroup): Promise<void> =>
     run(async () => {
-      if (!window.confirm(t('vracGroup.confirmClose'))) return
       await call(api.vrac.close(group.id))
       setNotice({ kind: 'ok', text: t('vracGroup.closed') })
       // Le récapitulatif est ce qu'on remet au commercial : on l'ouvre tout de suite.
@@ -102,7 +106,10 @@ export default function VracGroups() {
 
       const check = compareBlToNet(lookup.totalWeightKg, group.totalNetKg)
       if (check.kind === 'unknown') {
-        setNotice({ kind: 'warn', text: t('ops.blCheck.unknown', { reference: lookup.reference }) })
+        setNotice({
+          kind: 'warn',
+          text: t('ops.blCheck.unknown', { reference: lookup.reference })
+        })
       } else {
         setNotice({
           kind: check.kind === 'match' ? 'ok' : 'warn',
@@ -139,71 +146,172 @@ export default function VracGroups() {
   }
 
   return (
-    <div className="card">
-      <h2>{t('vracGroup.title')}</h2>
-      <p className="muted">{t('vracGroup.intro')}</p>
-
-      <div className="row filters">
-        <input
-          type="search"
-          value={search}
-          placeholder={t('common.search')}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
-          <option value="OUVERT">{t('vracGroup.filter.OUVERT')}</option>
-          <option value="CLOS">{t('vracGroup.filter.CLOS')}</option>
-          <option value="">{t('vracGroup.filter.all')}</option>
-        </select>
-        <label className="inline">
-          <input
-            type="checkbox"
-            checked={blPendingOnly}
-            onChange={(e) => setBlPendingOnly(e.target.checked)}
+    <div className="station">
+      <section className="panel table-panel" aria-labelledby="vrac-title">
+        <header className="panel-head">
+          <h2 id="vrac-title">{t('vracGroup.title')}</h2>
+          <Segmented
+            label={t('vracGroup.title')}
+            value={status}
+            onChange={setStatus}
+            options={[
+              { value: 'OUVERT', label: t('vracGroup.filter.OUVERT') },
+              { value: 'CLOS', label: t('vracGroup.filter.CLOS') },
+              { value: 'ALL', label: t('vracGroup.filter.all') }
+            ]}
           />
-          {t('ops.blPendingOnly')}
-        </label>
-        <button type="button" className="ghost" onClick={() => void reload()}>
-          {t('common.refresh')}
-        </button>
-      </div>
+        </header>
 
-      {error && <p className="error">{error}</p>}
-      {notice && (
-        <p className={notice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">
-          {notice.text}
+        <p className="lead">
+          <Icon name="info" size={22} />
+          {t('vracGroup.intro')}
         </p>
-      )}
 
-      <section className="vrac-list" aria-label={t('vracGroup.title')}>
-        {groups.length === 0 && <p className="empty-state muted">{t('vracGroup.empty')}</p>}
-        {groups.map((group) => {
+        <div className="filter-bar">
+          <label className="search-box">
+            <Icon name="search" size={22} />
+            <span className="sr-only">{t('common.search')}</span>
+            <input
+              type="search"
+              value={search}
+              placeholder={t('common.search')}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </label>
+          <label className="inline-check">
+            <input
+              type="checkbox"
+              checked={blPendingOnly}
+              onChange={(e) => setBlPendingOnly(e.target.checked)}
+            />
+            <span>{t('ops.blPendingOnly')}</span>
+          </label>
+          <button type="button" className="btn btn-secondary" onClick={() => void reload()}>
+            <Icon name="refresh" size={20} />
+            {t('common.refresh')}
+          </button>
+        </div>
+
+        {error && (
+          <Guide tone="error" title={t('common.error')} onDismiss={() => setError(null)}>
+            {error}
+          </Guide>
+        )}
+        {notice && (
+          <Guide tone={notice.kind} onDismiss={() => setNotice(null)}>
+            {notice.text}
+          </Guide>
+        )}
+
+        <div className="vrac-list" aria-label={t('vracGroup.title')}>
+          {groups.length === 0 && (
+            <div className="empty">
+              <Icon name="truck" size={44} />
+              <p>{t('vracGroup.empty')}</p>
+            </div>
+          )}
+
+          {groups.map((group) => {
             const blocker = closeBlocker(group)
             const isOpen = expanded === group.id
             return (
               <article className="vrac-card" key={group.id}>
-                <div className="vrac-card-head">
+                <header className="vrac-card-head">
                   <div className="vrac-ref">
-                    <strong>{group.reference}</strong>
-                    <span className="muted">{formatDateTime(group.createdAt)}</span>
-                    <strong>{group.partnerName ?? '—'}</strong>
+                    <strong className="ticket-no">{group.reference}</strong>
+                    <span
+                      className={`chip ${group.status === 'OUVERT' ? 'chip-waiting' : 'chip-done'}`}
+                    >
+                      <Icon name={group.status === 'OUVERT' ? 'clock' : 'check'} size={16} />
+                      {t(`vracGroup.status.${group.status}`)}
+                    </span>
+                    {isGroupBlPending(group) && (
+                      <span className="chip chip-warn">
+                        <Icon name="alert" size={16} />
+                        {t('ops.blPending')}
+                      </span>
+                    )}
+                    <small>{formatDateTime(group.createdAt)}</small>
                   </div>
-                  <div className="vrac-total"><span className="muted">{t('vracGroup.col.total')}</span><strong>{formatKg(group.totalNetKg, lang)}</strong></div>
-                  <div className="vrac-count"><strong>{group.weighedCount}</strong> {t('vracGroup.col.rotations')}
-                    {group.awaitingCount > 0 && <span className="badge warn">{t('vracGroup.awaiting', { count: String(group.awaitingCount) })}</span>}
-                  </div>
-                  <div className="vrac-status"><span className={group.status === 'OUVERT' ? 'badge warn' : 'badge ok'}>{t(`vracGroup.status.${group.status}`)}</span>
-                    <span>{group.blNo ?? (isGroupBlPending(group) ? t('ops.blPending') : '—')}</span>
-                  </div>
-                </div>
-                <div className="row actions vrac-actions">
-                  <button type="button" className="ghost" aria-expanded={isOpen} onClick={() => toggle(group)}>{isOpen ? t('common.close') : t('vracGroup.details')}</button>
+
+                  <dl className="vrac-metrics">
+                    <div>
+                      <dt>{t('vracGroup.col.partner')}</dt>
+                      <dd>{group.partnerName ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt>{t('vracGroup.col.rotations')}</dt>
+                      <dd>{group.weighedCount}</dd>
+                    </div>
+                    <div>
+                      <dt>{t('vracGroup.col.total')}</dt>
+                      <dd className="digits" dir="ltr">
+                        {formatKg(group.totalNetKg, lang)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>{t('vracGroup.col.bl')}</dt>
+                      <dd dir="ltr">{group.blNo ?? '—'}</dd>
+                    </div>
+                  </dl>
+                </header>
+
+                <div className="vrac-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    aria-expanded={isOpen}
+                    onClick={() => toggle(group)}
+                  >
+                    <Icon name="list" size={18} />
+                    {isOpen ? t('common.close') : t('vracGroup.details')}
+                  </button>
                   {group.status === 'OUVERT' ? (
-                    <button type="button" className="primary" disabled={busy || blocker !== null} onClick={() => void close(group)}>{t('vracGroup.close')}</button>
-                  ) : !group.blNo && <button type="button" className="ghost" disabled={busy} onClick={() => void reopen(group)}>{t('vracGroup.reopen')}</button>}
-                  <button type="button" className="ghost" disabled={busy} onClick={() => void showRecap(group.id).catch((e) => setError(errorMessage(e)))}>{t('vracGroup.recap')}</button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      disabled={busy || blocker !== null}
+                      onClick={() => setConfirmClose(group)}
+                    >
+                      <Icon name="check" size={18} />
+                      {t('vracGroup.close')}
+                    </button>
+                  ) : (
+                    !group.blNo && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={busy}
+                        onClick={() => void reopen(group)}
+                      >
+                        <Icon name="redo" size={18} />
+                        {t('vracGroup.reopen')}
+                      </button>
+                    )
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={busy}
+                    onClick={() => void showRecap(group.id).catch((e) => setError(errorMessage(e)))}
+                  >
+                    <Icon name="printer" size={18} />
+                    {t('vracGroup.recap')}
+                  </button>
+                  {group.awaitingCount > 0 && (
+                    <span className="chip chip-waiting">
+                      <Icon name="clock" size={16} />
+                      {t('vracGroup.awaiting', { count: group.awaitingCount })}
+                    </span>
+                  )}
                 </div>
-                {group.status === 'OUVERT' && blocker && <p className="warn-box vrac-blocker">{t(`vracGroup.blocker.${blocker}`)}</p>}
+
+                {group.status === 'OUVERT' && blocker && (
+                  <p className="vrac-blocker">
+                    <Icon name="alert" size={18} />
+                    {t(`vracGroup.blocker.${blocker}`)}
+                  </p>
+                )}
 
                 {isOpen && (
                   <div className="vrac-details">
@@ -211,19 +319,31 @@ export default function VracGroups() {
                     <ul className="rotation-list">
                       {group.rotations.map((rotation, index) => (
                         <li key={rotation.operationId}>
-                          <strong>{index + 1}. {rotation.ticketNo}</strong>
-                          <span>{rotation.plate ?? '—'} · {rotation.productCode ?? '—'}</span>
-                          <strong>{rotation.status === 'ANNULEE' ? t('vracGroup.rotation.cancelled') : rotation.weighed ? formatKg(rotation.netWeight, lang) : t('vracGroup.rotation.waiting')}</strong>
+                          <strong>
+                            {index + 1}. {rotation.ticketNo}
+                          </strong>
+                          <span>
+                            {rotation.plate ?? '—'} · {rotation.productCode ?? '—'}
+                          </span>
+                          <strong className="digits" dir="ltr">
+                            {rotation.status === 'ANNULEE'
+                              ? t('vracGroup.rotation.cancelled')
+                              : rotation.weighed
+                                ? formatKg(rotation.netWeight, lang)
+                                : t('vracGroup.rotation.waiting')}
+                          </strong>
                         </li>
                       ))}
                     </ul>
+
                     {group.weighedCount > 0 && (
                       <div className="bl-link-panel">
                         <h3>{t('vracGroup.linkBl')}</h3>
-                        <div className="row bl-lookup">
+                        <div className="bl-lookup">
                           <input
                             value={blDraft.blNo}
                             maxLength={64}
+                            dir="ltr"
                             placeholder={t('vracGroup.blPlaceholder')}
                             disabled={busy}
                             onChange={(e) =>
@@ -232,22 +352,26 @@ export default function VracGroups() {
                           />
                           <button
                             type="button"
-                            className="ghost"
+                            className="btn btn-secondary btn-sm"
                             disabled={busy || blDraft.blNo.trim() === ''}
                             onClick={() => void verifyBl(group)}
                           >
+                            <Icon name="in" size={18} />
                             {t('ops.blCheck')}
                           </button>
                           <button
                             type="button"
-                            className="primary"
+                            className="btn btn-primary btn-sm"
                             disabled={busy || group.status !== 'CLOS' || blDraft.blNo.trim() === ''}
                             onClick={() => void linkBl(group)}
                           >
+                            <Icon name="check" size={18} />
                             {t('vracGroup.linkBl')}
                           </button>
                         </div>
-                        {group.status !== 'CLOS' && <p className="muted">{t('vracGroup.closeBeforeBl')}</p>}
+                        {group.status !== 'CLOS' && (
+                          <p className="field-hint">{t('vracGroup.closeBeforeBl')}</p>
+                        )}
                       </div>
                     )}
                   </div>
@@ -255,7 +379,25 @@ export default function VracGroups() {
               </article>
             )
           })}
+        </div>
       </section>
+
+      <ConfirmDialog
+        open={confirmClose != null}
+        title={t('vracGroup.close')}
+        confirmLabel={t('vracGroup.close')}
+        cancelLabel={t('common.cancel')}
+        icon="check"
+        busy={busy}
+        onCancel={() => setConfirmClose(null)}
+        onConfirm={() => {
+          const group = confirmClose
+          setConfirmClose(null)
+          if (group) void close(group)
+        }}
+      >
+        <p>{t('vracGroup.confirmClose')}</p>
+      </ConfirmDialog>
 
       {preview && (
         <TicketPreview

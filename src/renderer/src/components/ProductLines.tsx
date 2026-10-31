@@ -1,6 +1,8 @@
-import type { ProductLine } from '@shared/types'
+import type { ArticleCatalogGroup, ProductLine } from '@shared/types'
 import { formatKg } from '../api'
 import { useI18n } from '../i18n'
+import Icon from './Icon'
+import ArticlePicker from './ArticlePicker'
 
 const EMPTY_LINE: ProductLine = { productCode: '', quantityKg: 0 }
 
@@ -32,11 +34,13 @@ export function linesTotal(lines: ProductLine[]): number {
 export default function ProductLines({
   lines,
   onChange,
-  disabled
+  disabled,
+  group = 'all'
 }: {
   lines: ProductLine[]
   onChange: (lines: ProductLine[]) => void
   disabled?: boolean
+  group?: ArticleCatalogGroup
 }) {
   const { t, lang } = useI18n()
 
@@ -44,60 +48,66 @@ export default function ProductLines({
     onChange(lines.map((line, i) => (i === index ? { ...line, ...changes } : line)))
 
   return (
-    <div className="lines-editor">
-      <div className="lines-head">
-        <strong>{t('lines.title')}</strong>
-        <span className="muted">
-          {t('lines.total')} : {formatKg(linesTotal(lines), lang)}
-        </span>
-      </div>
-
-      {lines.length > 0 && (
-        <div className="line-grid line-cols muted">
-          <span>{t('lines.product')}</span>
-          <span>{t('lines.quantity')}</span>
-          <span />
-        </div>
-      )}
+    <fieldset className="lines">
+      <legend className="field-label">{t('lines.title')}</legend>
 
       {lines.map((line, index) => (
-        <div className="line-grid" key={index}>
-          <input
+        <div className="line-row" key={index}>
+          <ArticlePicker
+            ariaLabel={`${t('lines.product')} ${index + 1}`}
             value={line.productCode}
+            group={group}
             disabled={disabled}
-            onChange={(e) => patch(index, { productCode: e.target.value })}
+            onChange={(productCode) => patch(index, { productCode, productId: null })}
           />
-          <input
-            type="number"
-            step="0.001"
-            min="0"
-            value={line.quantityKg === 0 ? '' : String(line.quantityKg)}
-            disabled={disabled}
-            onChange={(e) => patch(index, { quantityKg: Number(e.target.value) })}
-          />
+          <span className="input-unit">
+            <input
+              aria-label={`${t('lines.quantity')} ${index + 1}`}
+              placeholder={t('lines.qty')}
+              type="number"
+              step="0.001"
+              min="0"
+              dir="ltr"
+              value={line.quantityKg === 0 ? '' : String(line.quantityKg)}
+              disabled={disabled}
+              onChange={(e) => patch(index, { quantityKg: Number(e.target.value) })}
+            />
+            <span aria-hidden="true">{t('lines.kg')}</span>
+          </span>
           <button
             type="button"
-            className="ghost icon-btn"
+            className="btn btn-secondary btn-icon"
             title={t('lines.remove')}
-            aria-label={t('lines.remove')}
             disabled={disabled}
             onClick={() => onChange(lines.filter((_, i) => i !== index))}
           >
-            ✕
+            <Icon name="trash" size={22} />
+            <span className="sr-only">{t('lines.remove')}</span>
           </button>
         </div>
       ))}
 
-      <button
-        type="button"
-        className="add-line"
-        disabled={disabled}
-        onClick={() => onChange([...lines, { ...EMPTY_LINE }])}
-      >
-        + {t('lines.add')}
-      </button>
+      <div className="lines-foot">
+        <button
+          type="button"
+          className="btn btn-soft"
+          disabled={disabled}
+          onClick={() => onChange([...lines, { ...EMPTY_LINE }])}
+        >
+          <Icon name="plus" size={20} />
+          {t('lines.add')}
+        </button>
+        <span className="lines-total">
+          {t('lines.total')} <strong dir="ltr">{formatKg(linesTotal(lines), lang)}</strong>
+        </span>
+      </div>
 
-      {hasIncompleteLine(lines) && <p className="error">{t('lines.incomplete')}</p>}
-    </div>
+      {hasIncompleteLine(lines) && (
+        <p className="field-error" role="alert">
+          <Icon name="alert" size={18} />
+          {t('lines.incomplete')}
+        </p>
+      )}
+    </fieldset>
   )
 }

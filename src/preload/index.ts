@@ -68,7 +68,8 @@ const api: AppApi = {
     locations: () => invoke(CH.refLocations)
   },
   bl: {
-    lookup: (number) => invoke(CH.blLookup, { number })
+    lookup: (number) => invoke(CH.blLookup, { number }),
+    searchArticles: (query, group) => invoke(CH.blArticles, { query, group })
   },
   balance: {
     start: () => invoke(CH.balanceStart),

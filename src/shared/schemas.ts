@@ -47,6 +47,11 @@ export const blLookupSchema = z.object({
   number: z.string().trim().min(1).max(64)
 })
 
+export const articleSearchSchema = z.object({
+  query: z.string().trim().max(80),
+  group: z.enum(['raw', 'nutrition', 'all'])
+})
+
 /**
  * Adresse du service BL. Une chaîne vide rétablit l'adresse locale par défaut.
  * On refuse les schémas autres que http(s), les identifiants dans l'URL et

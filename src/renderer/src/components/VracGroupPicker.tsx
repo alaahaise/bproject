@@ -3,6 +3,7 @@ import { normalizePlate } from '@shared/domain/plate'
 import type { VracGroup } from '@shared/types'
 import { api, call, formatKg } from '../api'
 import { useI18n } from '../i18n'
+import Field from './Field'
 
 /**
  * Choix de l'enlèvement d'une rotation vrac : un nouvel enlèvement, ou l'un de
@@ -51,8 +52,7 @@ export default function VracGroupPicker({
   }, [plate, groups, touched])
 
   return (
-    <label>
-      {t('vracGroup.picker')}
+    <Field label={t('vracGroup.picker')} hint={t('vracGroup.pickerHint')}>
       <select
         value={value ?? ''}
         disabled={disabled}
@@ -73,7 +73,6 @@ export default function VracGroupPicker({
           </option>
         ))}
       </select>
-      <span className="muted">{t('vracGroup.pickerHint')}</span>
-    </label>
+    </Field>
   )
 }

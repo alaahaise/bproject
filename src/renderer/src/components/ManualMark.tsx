@@ -4,7 +4,11 @@ import { useI18n } from '../i18n'
 export default function ManualMark() {
   const { t } = useI18n()
   return (
-    <span className="manual-mark" title={t('station.manualMark')}>
+    <span
+      className="manual-mark"
+      title={t('station.manualMark')}
+      aria-label={t('station.manualMark')}
+    >
       M
     </span>
   )

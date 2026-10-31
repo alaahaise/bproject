@@ -1,23 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import type { Location, OpUpdate } from '@shared/channels'
+import type { FormBlock } from '@shared/domain/capture'
+import { articleGroupForOperation } from '@shared/domain/article-catalog'
 import { asksFrom, asksTo, locationFieldsFor } from '@shared/domain/locations'
-import { isManualKind } from '@shared/domain/weighing'
 import { allowsBl } from '@shared/domain/operation-fields'
-import type { VracGroup, Operation, OperationType, ProductLine, WeightSample } from '@shared/types'
-import { api, call, errorMessage, formatDateTime, formatKg } from '../api'
-import CaptureBox, { type CaptureRequest } from '../components/CaptureBox'
+import { isManualKind } from '@shared/domain/weighing'
+import type { Operation, OperationType, ProductLine, VracGroup, WeightSample } from '@shared/types'
+import { api, call, errorMessage, formatDateTime, formatKg, notifyTicketsChanged } from '../api'
+import CaptureBar, { type CaptureRequest } from '../components/CaptureBar'
+import ArticlePicker from '../components/ArticlePicker'
+import ConfirmDialog from '../components/ConfirmDialog'
+import Field from '../components/Field'
+import Guide from '../components/Guide'
+import Icon from '../components/Icon'
+import JourneyCard from '../components/JourneyCard'
 import LocationPickers from '../components/LocationPickers'
 import ManualMark from '../components/ManualMark'
 import Pagination from '../components/Pagination'
-import PendingTicketCard from '../components/PendingTicketCard'
 import ProductLines, { cleanLines, hasIncompleteLine } from '../components/ProductLines'
 import RetourToggle from '../components/RetourToggle'
-import VracToggle from '../components/VracToggle'
 import SimulatorPanel from '../components/SimulatorPanel'
+import StatusChip from '../components/StatusChip'
 import TicketFilters from '../components/TicketFilters'
 import TicketPreview from '../components/TicketPreview'
-import WeightReadout from '../components/WeightReadout'
+import TruckCard from '../components/TruckCard'
+import VracToggle from '../components/VracToggle'
+import WeightConsole from '../components/WeightConsole'
 import { useBalance } from '../hooks/useBalance'
 import { useTicketPage } from '../hooks/useTicketPage'
 import { useI18n } from '../i18n'
@@ -80,8 +89,24 @@ export default function Balance2({ type }: { type: OperationType }) {
   const location = useLocation()
   const pendingTicket = (location.state as { pendingTicket?: Operation } | null)?.pendingTicket
   const [selected, setSelected] = useState<Operation | null>(null)
+  const [form, setForm] = useState<CompleteForm>(EMPTY_FORM)
+  const [lines, setLines] = useState<ProductLine[]>([])
+  const [locations, setLocations] = useState<Location[]>([])
   // Enlèvement du ticket vrac pesé : son total court avec chaque rotation.
   const [vracGroup, setVracGroup] = useState<VracGroup | null>(null)
+  const [showNote, setShowNote] = useState(false)
+  // Camion repassé sur la balance : la 1re pesée du ticket choisi est à refaire.
+  const [redo, setRedo] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [confirmSave, setConfirmSave] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [blBusy, setBlBusy] = useState(false)
+  const [blNotice, setBlNotice] = useState<{ kind: 'ok' | 'warn'; text: string } | null>(null)
+  const [preview, setPreview] = useState<{ id: number; html: string } | null>(null)
+
+  const ticketRef = useRef<Operation | null>(null)
+
+  // Vrac pesé : afficher le total de l'enlèvement auquel cette rotation s'ajoute.
   const vracGroupId = selected?.vracGroupId ?? null
   const secondDone = selected?.second != null
   useEffect(() => {
@@ -97,19 +122,6 @@ export default function Balance2({ type }: { type: OperationType }) {
       alive = false
     }
   }, [vracGroupId, secondDone])
-  const [form, setForm] = useState<CompleteForm>(EMPTY_FORM)
-  const [lines, setLines] = useState<ProductLine[]>([])
-  const [locations, setLocations] = useState<Location[]>([])
-  // Camion repassé sur la balance : la 1re pesée du ticket choisi est à refaire.
-  const [redo, setRedo] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [confirmSave, setConfirmSave] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [blBusy, setBlBusy] = useState(false)
-  const [blNotice, setBlNotice] = useState<{ kind: 'ok' | 'warn'; text: string } | null>(null)
-  const [preview, setPreview] = useState<{ id: number; html: string } | null>(null)
-
-  const ticketRef = useRef<Operation | null>(null)
 
   // Liste paginée côté serveur : tickets pesés une fois, en attente de la 2e pesée.
   const list = useTicketPage({ type, status: 'OUVERTE', awaitingSecond: true })
@@ -125,21 +137,22 @@ export default function Balance2({ type }: { type: OperationType }) {
     async (weight: number, manual: boolean, source: WeightSample | null): Promise<void> => {
       const current = ticketRef.current
       if (!current) return
-      // Vrac : pas de BL, donc pas de quantité à saisir. Le poids net en tient lieu.
       const vrac = form.isVrac
+      const clean = cleanLines(lines)
       if (vrac) {
         if (form.vracProduct.trim() === '') {
           setError(t('vrac.needProduct'))
           return
         }
-      } else if (hasIncompleteLine(lines)) {
-        setError(t('lines.incomplete'))
-        return
-      }
-      const clean = vrac ? [] : cleanLines(lines)
-      if (!vrac && clean.length === 0) {
-        setError(t('bal2.needLines'))
-        return
+      } else {
+        if (hasIncompleteLine(lines)) {
+          setError(t('lines.incomplete'))
+          return
+        }
+        if (clean.length === 0) {
+          setError(t('bal2.needLines'))
+          return
+        }
       }
       setBusy(true)
       setError(null)
@@ -154,11 +167,13 @@ export default function Balance2({ type }: { type: OperationType }) {
             isManual: manual,
             stableMs: source?.stableMs ?? null,
             raw: source?.raw ? source.raw.slice(-255) : manual && !source ? 'MANUEL' : null,
-            ...(vrac ? { vracProduct: form.vracProduct.trim() } : { lines: clean })
+            lines: vrac ? undefined : clean,
+            vracProduct: vrac ? form.vracProduct.trim() : null
           })
         )
         ticketRef.current = updated
         setSelected(updated)
+        notifyTicketsChanged()
       } catch (err) {
         setError(errorMessage(err))
       } finally {
@@ -214,99 +229,40 @@ export default function Balance2({ type }: { type: OperationType }) {
     setSelected(null)
     setLines([])
     setForm(EMPTY_FORM)
+    setShowNote(false)
     setError(null)
-    setBlNotice(null)
   }, [type])
 
-  const choose = useCallback((op: Operation): void => {
-    setRedo(false)
+  // Arrivée depuis la 1re balance (« ouvrir et continuer ce ticket »).
+  const resumed = useRef(false)
+  useEffect(() => {
+    if (resumed.current || !pendingTicket || pendingTicket.type !== type) return
+    resumed.current = true
+    choose(pendingTicket)
+  }, [pendingTicket, type])
+
+  function choose(op: Operation): void {
+    stopRedo()
     ticketRef.current = op
     setSelected(op)
     setForm({
       isRetour: op.isRetour,
       isVrac: op.isVrac,
-      vracProduct: op.lines[0]?.productCode ?? '',
+      vracProduct: op.isVrac ? (op.lines[0]?.productCode ?? '') : '',
       partnerName: op.partnerName ?? '',
       blNo: op.blNo ?? '',
       locationFromId: op.locationFromId == null ? '' : String(op.locationFromId),
       locationToId: op.locationToId == null ? '' : String(op.locationToId),
       notes: op.notes ?? ''
     })
+    setShowNote(false)
     // Au moins une ligne prête à remplir : le produit est la première chose à saisir ici.
     setLines(
       op.lines.length > 0 ? op.lines.map((l) => ({ ...l })) : [{ productCode: '', quantityKg: 0 }]
     )
+    setBlNotice(null)
     setConfirmSave(false)
     setError(null)
-    setBlNotice(null)
-  }, [])
-
-  // Un clic depuis l’alerte de la 1re balance ouvre directement le ticket concerné.
-  useEffect(() => {
-    if (
-      pendingTicket?.type === type &&
-      pendingTicket.status === 'OUVERTE' &&
-      pendingTicket.second == null
-    ) {
-      choose(pendingTicket)
-    }
-  }, [choose, location.key, pendingTicket, type])
-
-  /**
-   * Importe un BL : client, numéro de BL et lignes de produit. Le poids de
-   * chaque ligne devient la quantité en kg ; si HFSQL ne le connaît pas, la
-   * ligne reste à compléter par l'opérateur (0 dans l'écran, donc incomplète).
-   */
-  async function loadBl(): Promise<void> {
-    const number = form.blNo.trim()
-    if (!number) return
-
-    setBlBusy(true)
-    setBlNotice(null)
-    setError(null)
-    try {
-      const lookup = await call(api.bl.lookup(number))
-      const imported: ProductLine[] = lookup.lines.map((line) => ({
-        productCode: (line.name || line.code || '').slice(0, 64),
-        quantityKg: line.weightKg ?? 0
-      }))
-
-      setForm((previous) => ({
-        ...previous,
-        blNo: lookup.reference,
-        partnerName: (lookup.clientName ?? previous.partnerName).slice(0, 160)
-      }))
-
-      if (imported.length === 0) {
-        setBlNotice({ kind: 'warn', text: t('bal2.blNoLines') })
-      } else {
-        setLines(imported)
-        if (!lookup.weightComplete) {
-          setBlNotice({
-            kind: 'warn',
-            text: t('bal2.blWeightMissing', { count: lookup.unknownWeightLines })
-          })
-        } else {
-          setBlNotice({
-            kind: 'ok',
-            text: t('bal2.blLoaded', {
-              count: lookup.lines.length,
-              weight: formatKg(lookup.totalWeightKg, lang)
-            })
-          })
-        }
-      }
-    } catch (err) {
-      setError(errorMessage(err))
-    } finally {
-      setBlBusy(false)
-    }
-  }
-
-  function changeLines(next: ProductLine[]): void {
-    setLines(next)
-    // Un avertissement « poids absent » ne doit pas rester après une saisie.
-    if (blNotice) setBlNotice(null)
   }
 
   function back(): void {
@@ -316,7 +272,7 @@ export default function Balance2({ type }: { type: OperationType }) {
     setSelected(null)
     setLines([])
     setForm(EMPTY_FORM)
-    setBlNotice(null)
+    setShowNote(false)
     void list.reload()
   }
 
@@ -331,9 +287,11 @@ export default function Balance2({ type }: { type: OperationType }) {
       ticketRef.current = closed
       setSelected(closed)
       setConfirmSave(false)
+      notifyTicketsChanged()
       await list.reload()
     } catch (err) {
       setError(errorMessage(err))
+      setConfirmSave(false)
     } finally {
       setBusy(false)
     }
@@ -362,6 +320,46 @@ export default function Balance2({ type }: { type: OperationType }) {
     }
   }
 
+  /** Remplit les produits depuis le BL HFSQL : le commercial les a déjà saisis. */
+  async function loadBl(): Promise<void> {
+    const reference = form.blNo.trim()
+    if (reference === '') return
+    setBlBusy(true)
+    setBlNotice(null)
+    try {
+      const lookup = await call(api.bl.lookup(reference))
+      setForm((f) => ({ ...f, partnerName: f.partnerName || lookup.clientName || '' }))
+      if (lookup.lines.length === 0) {
+        setBlNotice({ kind: 'warn', text: t('bal2.blNoLines') })
+        return
+      }
+      setLines(
+        lookup.lines.map((line) => ({
+          productCode: line.code ?? line.name ?? '',
+          quantityKg: line.weightKg ?? 0
+        }))
+      )
+      setBlNotice(
+        lookup.weightComplete
+          ? {
+              kind: 'ok',
+              text: t('bal2.blLoaded', {
+                count: lookup.lines.length,
+                weight: formatKg(lookup.totalWeightKg, lang)
+              })
+            }
+          : {
+              kind: 'warn',
+              text: t('bal2.blWeightMissing', { count: lookup.unknownWeightLines })
+            }
+      )
+    } catch (err) {
+      setBlNotice({ kind: 'warn', text: errorMessage(err) })
+    } finally {
+      setBlBusy(false)
+    }
+  }
+
   async function captureNow(request: CaptureRequest): Promise<void> {
     if (!selected?.first) return
     const source = request.manual ? null : balance.sample
@@ -371,396 +369,491 @@ export default function Balance2({ type }: { type: OperationType }) {
 
   const complete = selected?.second != null
   const closed = selected != null && selected.status !== 'OUVERTE'
-  // Le vrac n'a pas de lignes à compléter : seul le nom du produit est exigé.
-  const hasPartialLine = !form.isVrac && hasIncompleteLine(lines)
-  const missingLines = !form.isVrac && !hasPartialLine && cleanLines(lines).length === 0
-  const missingVracProduct = form.isVrac && form.vracProduct.trim() === ''
-  const incomplete = hasPartialLine || missingLines || missingVracProduct
-  const working = busy || blBusy
+  const incomplete = hasIncompleteLine(lines)
+  const block: FormBlock | null = redo
+    ? null
+    : form.isVrac
+      ? form.vracProduct.trim() === ''
+        ? 'needVracProduct'
+        : null
+      : incomplete
+        ? 'incompleteLines'
+        : cleanLines(lines).length === 0
+          ? 'needLines'
+          : null
 
   const rows = list.data?.rows ?? []
+  const shownError = error ?? list.error
 
-  return (
-    <div className="station">
-      {(error ?? list.error) && <p className="error">{error ?? list.error}</p>}
+  const errorBanner = shownError && (
+    <Guide
+      tone="error"
+      title={t('common.error')}
+      onDismiss={error ? () => setError(null) : undefined}
+    >
+      {shownError}
+    </Guide>
+  )
 
-      {!selected && (
-        <div className="card form-card">
-          <h2>{t('bal2.pending')}</h2>
-          <p className="screen-hint">{t('bal2.pendingHint')}</p>
-          <TicketFilters
-            autoFocus
-            search={list.search}
-            onSearch={list.setSearch}
-            placeholder={t('bal2.search')}
-            dateFrom={list.dateFrom}
-            dateTo={list.dateTo}
-            onDateFrom={list.setDateFrom}
-            onDateTo={list.setDateTo}
-          />
+  // ——— 1. Choisir le camion ———
+  if (!selected) {
+    return (
+      <div className="station">
+        {errorBanner}
+        <div className="work">
+          <section className="panel list-panel" aria-labelledby="b2-list-title">
+            <h2 id="b2-list-title">{t('b2.listTitle')}</h2>
+            <p className="lead">
+              <Icon name="info" size={22} />
+              {t('b2.listGuide')}
+            </p>
 
-          {rows.length > 0 ? (
-            <div className="pending-grid">
-              {rows.map((op) => (
-                <PendingTicketCard key={op.id} ticket={op} onOpen={choose} />
-              ))}
-            </div>
-          ) : (
-            !list.loading && (
-              <p className="empty-state" role="status">
-                {list.filtered ? t('bal2.noMatch') : t('bal2.none')}
-              </p>
-            )
-          )}
-
-          {list.data && (
-            <Pagination
-              page={list.data.page}
-              pages={list.data.pages}
-              total={list.data.total}
-              pageSize={list.data.pageSize}
-              loading={list.loading}
-              onPage={list.setPage}
-              onPageSize={list.setPageSize}
+            <TicketFilters
+              autoFocus
+              search={list.search}
+              onSearch={list.setSearch}
+              placeholder={t('bal2.search')}
+              dateFrom={list.dateFrom}
+              dateTo={list.dateTo}
+              onDateFrom={list.setDateFrom}
+              onDateTo={list.setDateTo}
             />
-          )}
-        </div>
-      )}
 
-      {selected && (
-        <>
-          <WeightReadout
-            sample={balance.sample}
-            running={balance.running}
-            busy={busy}
-            onStart={() => void balance.startBalance()}
-          />
-
-          <div className="card form-card">
-            <div className="ticket-head">
-              <span className={`badge${closed ? ' ok' : ''}`}>
-                {closed ? t('ops.final') : t('ops.primary')}
-              </span>
-              {selected.isRetour && <span className="badge warn">{t('station.retour')}</span>}
-              {selected.isVrac && <span className="badge warn">{t('station.vrac')}</span>}
-              <strong>{selected.ticketNo}</strong>
-              {!complete && (
-                <div className="head-actions">
-                  {!redo && (
-                    <button type="button" disabled={busy} onClick={startRedo}>
-                      {t('bal.redo')}
+            {rows.length > 0 && (
+              <ul className="truck-list">
+                {rows.map((op) => (
+                  <li key={op.id}>
+                    <button type="button" className="truck-row" onClick={() => choose(op)}>
+                      <span className="plate" dir="ltr">
+                        {op.plate || '—'}
+                      </span>
+                      <span className="truck-row-info">
+                        <strong>{op.driverName || '—'}</strong>
+                        <small>
+                          {op.ticketNo} · {formatDateTime(op.createdAt)}
+                          {op.isRetour && (
+                            <span className="chip chip-retour">{t('station.retour')}</span>
+                          )}
+                          {op.isVrac && <span className="chip chip-warn">{t('station.vrac')}</span>}
+                        </small>
+                      </span>
+                      <span className="truck-row-weight">
+                        <small>{t('station.firstWeigh')}</small>
+                        <strong className="digits" dir="ltr">
+                          {formatKg(op.first?.weight, lang)}
+                        </strong>
+                        {op.first?.isManual && <ManualMark />}
+                      </span>
+                      <span className="truck-row-go">
+                        {t('bal2.choose')}
+                        <Icon name="chevron" size={22} className="icon-flip" />
+                      </span>
                     </button>
-                  )}
-                  <button type="button" className="ghost" onClick={back}>
-                    {t('bal2.back')}
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="summary">
-              <div>
-                <span className="muted">{t('station.plate')}</span>
-                <p>{selected.plate || '—'}</p>
-              </div>
-              <div>
-                <span className="muted">{t('station.driver')}</span>
-                <p>{selected.driverName || '—'}</p>
-              </div>
-              <div>
-                <span className="muted">{t('station.firstWeigh')}</span>
-                <p>
-                  <strong>{formatKg(selected.first?.weight, lang)}</strong>
-                  {selected.first?.isManual && <ManualMark />}
-                </p>
-              </div>
-            </div>
-
-            {redo && (
-              <p className="warn-box">
-                {t('bal.redoHint', { weight: formatKg(selected.first?.weight, lang) })}
-              </p>
+                  </li>
+                ))}
+              </ul>
             )}
 
-            {!complete && (
-              <div className="form-col">
-                {form.isVrac ? (
-                  <>
-                    <label>
-                      {t('vrac.product')}
-                      <input
-                        autoFocus
-                        maxLength={64}
-                        value={form.vracProduct}
-                        disabled={working}
-                        onChange={(e) => setForm({ ...form, vracProduct: e.target.value })}
-                      />
-                    </label>
-                    <p className="hint-box">{t('vrac.productHint')}</p>
-                    <label>
-                      {t('station.partner')}
-                      <input
-                        value={form.partnerName}
-                        disabled={working}
-                        onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
-                      />
-                    </label>
-                  </>
-                ) : (
-                  <>
-                    <ProductLines lines={lines} onChange={changeLines} disabled={working} />
-                    <div className="pair">
-                      <label>
-                        {t('station.partner')}
-                        <input
-                          value={form.partnerName}
-                          disabled={working}
-                          onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
-                        />
-                      </label>
-                      {allowsBl(type, form.isRetour) && (
-                        <label>
-                          {t('station.blNo')}
-                          <div className="bl-lookup">
-                            <input
-                              value={form.blNo}
-                              disabled={working}
-                              onChange={(e) => {
-                                setForm({ ...form, blNo: e.target.value })
-                                setBlNotice(null)
-                              }}
-                            />
-                            <button
-                              type="button"
-                              className="ghost"
-                              disabled={working || form.blNo.trim() === ''}
-                              onClick={() => void loadBl()}
-                            >
-                              {blBusy ? t('common.loading') : t('bal2.blLoad')}
-                            </button>
-                          </div>
-                        </label>
-                      )}
-                    </div>
-                    {blNotice && (
-                      <p className={blNotice.kind === 'ok' ? 'ok' : 'warn-box'} role="status">
-                        {blNotice.text}
-                      </p>
-                    )}
-                  </>
+            {rows.length === 0 && !list.loading && (
+              <div className="empty">
+                <Icon name="truck" size={44} />
+                <p>{list.filtered ? t('bal2.noMatch') : t('bal2.none')}</p>
+              </div>
+            )}
+
+            {list.data && (
+              <Pagination
+                page={list.data.page}
+                pages={list.data.pages}
+                total={list.data.total}
+                pageSize={list.data.pageSize}
+                loading={list.loading}
+                onPage={list.setPage}
+                onPageSize={list.setPageSize}
+              />
+            )}
+          </section>
+
+          <aside className="side">
+            <JourneyCard step={3} />
+          </aside>
+        </div>
+      </div>
+    )
+  }
+
+  // ——— 2. Compléter et peser ———
+  return (
+    <div className="station">
+      <WeightConsole
+        sample={balance.sample}
+        running={balance.running}
+        simulated={balance.simulated}
+        busy={busy}
+        onStart={() => void balance.startBalance()}
+      />
+
+      {errorBanner}
+
+      <div className="work">
+        {!complete && (
+          <section className="panel form-panel" aria-labelledby="b2-form-title">
+            <h2 id="b2-form-title" className="sr-only">
+              {t('bal2.complete')}
+            </h2>
+            {redo && (
+              <Guide tone="warn">
+                {t('bal.redoHint', { weight: formatKg(selected.first?.weight, lang) })}
+              </Guide>
+            )}
+            <div className="panel-toolbar">
+              {!redo && (
+                <p className="lead">
+                  <Icon name="info" size={22} />
+                  {t('b2.formGuide')}
+                </p>
+              )}
+              <div className="toolbar-actions">
+                {!redo && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={busy}
+                    onClick={startRedo}
+                  >
+                    <Icon name="redo" size={18} />
+                    {t('bal.redo')}
+                  </button>
                 )}
-                <RetourToggle
-                  type={type}
-                  checked={form.isRetour}
-                  onChange={(value) =>
-                    // Un retour n'est jamais du vrac ; son BL reste facultatif.
-                    setForm({ ...form, isRetour: value, isVrac: value ? false : form.isVrac })
-                  }
+                <button type="button" className="btn btn-secondary btn-sm" onClick={back}>
+                  <Icon name="arrow-left" size={18} className="icon-flip" />
+                  {t('truck.change')}
+                </button>
+              </div>
+            </div>
+
+            <div className="form-col">
+              {form.isVrac ? (
+                <>
+                  <Guide tone="info">{t('station.vrac.hint')}</Guide>
+                  <Field label={t('vrac.product')} hint={t('vrac.productHint')}>
+                    <ArticlePicker
+                      ariaLabel={t('vrac.product')}
+                      value={form.vracProduct}
+                      group={articleGroupForOperation(type, form.isRetour)}
+                      onChange={(vracProduct) => setForm({ ...form, vracProduct })}
+                      disabled={busy}
+                    />
+                  </Field>
+                </>
+              ) : (
+                <ProductLines
+                  lines={lines}
+                  onChange={setLines}
                   disabled={busy}
+                  group={articleGroupForOperation(type, form.isRetour)}
                 />
-                <VracToggle
-                  type={type}
-                  isRetour={form.isRetour}
-                  checked={form.isVrac}
-                  onChange={(value) => setForm({ ...form, isVrac: value })}
-                  disabled={busy}
-                />
-                <LocationPickers
-                  type={type}
-                  isRetour={form.isRetour}
-                  locations={locations}
-                  from={form.locationFromId}
-                  to={form.locationToId}
-                  onFrom={(value) => setForm({ ...form, locationFromId: value })}
-                  onTo={(value) => setForm({ ...form, locationToId: value })}
-                  disabled={busy}
-                />
-                <label>
-                  {t('station.notes')}
+              )}
+
+              <div className="pair">
+                <Field label={t('station.partner')} optional>
+                  <input
+                    autoComplete="off"
+                    value={form.partnerName}
+                    onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
+                  />
+                </Field>
+                {allowsBl(type, form.isRetour) && !form.isVrac && (
+                  <Field label={t('station.blNo')} optional>
+                    <span className="field-action">
+                      <input
+                        autoComplete="off"
+                        dir="ltr"
+                        value={form.blNo}
+                        onChange={(e) => setForm({ ...form, blNo: e.target.value })}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={busy || blBusy || form.blNo.trim() === ''}
+                        onClick={() => void loadBl()}
+                      >
+                        <Icon name="in" size={18} />
+                        {t('bal2.blLoad')}
+                      </button>
+                    </span>
+                  </Field>
+                )}
+              </div>
+
+              {blNotice && (
+                <Guide tone={blNotice.kind} onDismiss={() => setBlNotice(null)}>
+                  {blNotice.text}
+                </Guide>
+              )}
+
+              <RetourToggle
+                type={type}
+                checked={form.isRetour}
+                onChange={(value) =>
+                  setForm({ ...form, isRetour: value, isVrac: value ? false : form.isVrac })
+                }
+                disabled={busy}
+              />
+
+              <VracToggle
+                type={type}
+                isRetour={form.isRetour}
+                checked={form.isVrac}
+                onChange={(value) =>
+                  setForm({
+                    ...form,
+                    isVrac: value,
+                    vracProduct:
+                      value && form.vracProduct === ''
+                        ? (lines[0]?.productCode ?? '')
+                        : form.vracProduct,
+                  })
+                }
+                disabled={busy}
+              />
+
+              <LocationPickers
+                type={type}
+                isRetour={form.isRetour}
+                locations={locations}
+                from={form.locationFromId}
+                to={form.locationToId}
+                onFrom={(value) => setForm({ ...form, locationFromId: value })}
+                onTo={(value) => setForm({ ...form, locationToId: value })}
+                disabled={busy}
+              />
+
+              {showNote || form.notes !== '' ? (
+                <Field label={t('station.notes')} optional>
                   <textarea
                     rows={2}
                     value={form.notes}
                     onChange={(e) => setForm({ ...form, notes: e.target.value })}
                   />
-                </label>
+                </Field>
+              ) : (
+                <button type="button" className="btn btn-link" onClick={() => setShowNote(true)}>
+                  <Icon name="plus" size={20} />
+                  {t('form.addNote')}
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+
+        {complete && (
+          <section className="panel result-panel" aria-labelledby="b2-result">
+            <div className="result-hero">
+              <Icon name="check-circle" size={52} />
+              <div>
+                <h2 id="b2-result">{closed ? t('b2.closedTitle') : t('b2.doneTitle')}</h2>
+                <p>
+                  <span className="ticket-no">{selected.ticketNo}</span>{' '}
+                  <StatusChip op={selected} />
+                  {selected.isVrac && <span className="chip chip-warn">{t('station.vrac')}</span>}
+                </p>
+                <p
+                  className={`hero-note${selected.ecartOk === false && !closed ? ' is-warn' : ''}`}
+                >
+                  {closed
+                    ? t('b2.closedGuide')
+                    : selected.ecartOk === false
+                      ? t('b2.ecartWarn')
+                      : t('b2.checkGuide')}
+                </p>
+              </div>
+            </div>
+
+            <div className="totals">
+              <div
+                className={`total-net${
+                  selected.ecartOk === false ? ' is-ko' : selected.ecartOk === true ? ' is-ok' : ''
+                }`}
+              >
+                <span>{t('station.net')}</span>
+                <strong className="digits" dir="ltr">
+                  {formatKg(selected.netWeight, lang)}
+                </strong>
+                {selected.ecartOk != null && (
+                  <span className={`chip ${selected.ecartOk ? 'chip-done' : 'chip-warn'}`}>
+                    <Icon name={selected.ecartOk ? 'check' : 'alert'} size={16} />
+                    {selected.ecartOk ? t('station.ecartOk') : t('station.ecartKo')}
+                  </span>
+                )}
+              </div>
+              <dl className="total-grid">
+                <div>
+                  <dt>{t('station.gross')}</dt>
+                  <dd dir="ltr">
+                    {formatKg(selected.grossWeight, lang)}
+                    {isManualKind(selected, 'BRUT') && <ManualMark />}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t('station.tare')}</dt>
+                  <dd dir="ltr">
+                    {formatKg(selected.tareWeight, lang)}
+                    {isManualKind(selected, 'TARE') && <ManualMark />}
+                  </dd>
+                </div>
+                {!selected.isVrac && (
+                  <>
+                    <div>
+                      <dt>{t('result.supposed')}</dt>
+                      <dd dir="ltr">{formatKg(selected.weightSupposed, lang)}</dd>
+                    </div>
+                    <div>
+                      <dt>{t('station.ecart')}</dt>
+                      <dd dir="ltr">{formatKg(selected.ecart, lang)}</dd>
+                    </div>
+                  </>
+                )}
+              </dl>
+            </div>
+
+            {selected.isVrac && (
+              <Guide tone="ok" title={t('station.vrac')}>
+                {vracGroup
+                  ? t('vracGroup.current', {
+                      ref: vracGroup.reference,
+                      count: vracGroup.weighedCount,
+                      total: formatKg(vracGroup.totalNetKg, lang)
+                    })
+                  : t('vrac.handover')}
+              </Guide>
+            )}
+
+            <div className="weighings">
+              <div>
+                <span>{t('station.firstWeigh')}</span>
+                <strong className="digits" dir="ltr">
+                  {formatKg(selected.first?.weight, lang)}
+                </strong>
+                {selected.first?.isManual && <ManualMark />}
+                <small>{selected.first ? formatDateTime(selected.first.at) : '—'}</small>
+              </div>
+              <div>
+                <span>{t('station.secondWeigh')}</span>
+                <strong className="digits" dir="ltr">
+                  {formatKg(selected.second?.weight, lang)}
+                </strong>
+                {selected.second?.isManual && <ManualMark />}
+                <small>{selected.second ? formatDateTime(selected.second.at) : '—'}</small>
+              </div>
+            </div>
+
+            {selected.lines.length > 0 && (
+              <div className="lines-readonly">
+                <h3>{t('lines.title')}</h3>
+                {selected.lines.map((line, index) => (
+                  <div className="lines-readonly-row" key={index}>
+                    <span>{line.productCode}</span>
+                    <strong className="digits">{formatKg(line.quantityKg, lang)}</strong>
+                  </div>
+                ))}
               </div>
             )}
 
-            {complete && (
-              <>
-                <div className="weighings">
-                  <div className="weigh">
-                    <span className="muted">{t('station.firstWeigh')}</span>
-                    <strong>
-                      {formatKg(selected.first?.weight, lang)}
-                      {selected.first?.isManual && <ManualMark />}
-                    </strong>
-                    <small>{selected.first ? formatDateTime(selected.first.at) : '—'}</small>
-                  </div>
-                  <div className="weigh">
-                    <span className="muted">{t('station.secondWeigh')}</span>
-                    <strong>
-                      {formatKg(selected.second?.weight, lang)}
-                      {selected.second?.isManual && <ManualMark />}
-                    </strong>
-                    <small>{selected.second ? formatDateTime(selected.second.at) : '—'}</small>
-                  </div>
-                </div>
-
-                {selected.lines.length > 0 && (
-                  <div className="lines-readonly">
-                    <span className="muted">{t('lines.title')}</span>
-                    {selected.lines.map((line, index) => (
-                      <div className="row" key={index}>
-                        <span>{line.productCode}</span>
-                        <strong>{formatKg(line.quantityKg, lang)}</strong>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="totals">
-                  <div>
-                    <span className="muted">{t('station.tare')}</span>
-                    <strong>
-                      {formatKg(selected.tareWeight, lang)}
-                      {isManualKind(selected, 'TARE') && <ManualMark />}
-                    </strong>
-                  </div>
-                  <div>
-                    <span className="muted">{t('station.gross')}</span>
-                    <strong>
-                      {formatKg(selected.grossWeight, lang)}
-                      {isManualKind(selected, 'BRUT') && <ManualMark />}
-                    </strong>
-                  </div>
-                  <div>
-                    <span className="muted">{t('station.net')}</span>
-                    <strong className="net">{formatKg(selected.netWeight, lang)}</strong>
-                  </div>
-                  {!selected.isVrac && (
-                    <>
-                      <div>
-                        <span className="muted">{t('station.weightSupposed')}</span>
-                        <strong>{formatKg(selected.weightSupposed, lang)}</strong>
-                      </div>
-                      <div>
-                        <span className="muted">{t('station.ecart')}</span>
-                        <strong>{formatKg(selected.ecart, lang)}</strong>
-                        {selected.ecartOk != null && (
-                          <span className={selected.ecartOk ? 'badge ok' : 'badge warn'}>
-                            {selected.ecartOk ? t('station.ecartOk') : t('station.ecartKo')}
-                          </span>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {selected.isVrac && (
-                  <div className="hint-box">
-                    <p>{t('vrac.handover')}</p>
-                    {vracGroup && (
-                      <p>
-                        <strong>
-                          {t('vracGroup.current', {
-                            ref: vracGroup.reference,
-                            count: String(vracGroup.weighedCount),
-                            total: `${formatKg(vracGroup.totalNetKg, lang)}`
-                          })}
-                        </strong>
-                      </p>
-                    )}
-                    <p className="muted">{t('vracGroup.nextHint')}</p>
-                  </div>
-                )}
-
-                {!closed && (
-                  <div className="row">
-                    <p className="ok">{t('station.readyToSave')}</p>
-                    {confirmSave ? (
-                      <>
-                        <strong>{t('station.confirmSave', { ticket: selected.ticketNo })}</strong>
-                        <button
-                          type="button"
-                          className="primary"
-                          disabled={busy}
-                          onClick={() => void saveTicket()}
-                        >
-                          {t('common.confirm')}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => setConfirmSave(false)}
-                        >
-                          {t('common.cancel')}
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="primary"
-                        disabled={busy}
-                        onClick={() => setConfirmSave(true)}
-                      >
-                        {t('station.save')}
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {closed && <p className="ok">{t('station.closed')}</p>}
-              </>
-            )}
-
-            {!complete && (
-              <>
-                {!redo && missingLines && (
-                  <p className="error capture-hint" role="status">
-                    {t('bal2.needLines')}
-                  </p>
-                )}
-                {!redo && missingVracProduct && (
-                  <p className="error capture-hint" role="status">
-                    {t('vrac.needProduct')}
-                  </p>
-                )}
-                <CaptureBox
-                  key={`${selected.id}-${redo ? 'redo-first' : 'second-weigh'}`}
-                  label={redo ? t('bal.redoCapture') : t('bal2.capture')}
-                  sample={balance.sample}
-                  busy={working}
-                  blocked={!redo && incomplete}
-                  onCapture={(request) => void captureNow(request)}
-                  onCancel={redo ? stopRedo : undefined}
-                />
-              </>
-            )}
-
-            {complete && (
-              <div className="actions-row">
+            <div className="result-actions">
+              {!closed ? (
                 <button
                   type="button"
-                  className="primary"
+                  className="btn btn-primary btn-xl"
                   disabled={busy}
-                  onClick={() => void printTicket(selected.id)}
+                  onClick={() => setConfirmSave(true)}
                 >
-                  {t('station.print')}
+                  <Icon name="check-circle" size={30} />
+                  {t('station.save')}
                 </button>
-                <button type="button" disabled={busy} onClick={() => void openPreview(selected.id)}>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-xl"
+                    disabled={busy}
+                    onClick={() => void printTicket(selected.id)}
+                  >
+                    <Icon name="printer" size={30} />
+                    {t('station.print')}
+                  </button>
+                  <button type="button" className="btn btn-secondary btn-xl" onClick={back}>
+                    <Icon name="truck" size={30} />
+                    {t('b2.next')}
+                  </button>
+                </>
+              )}
+              <span className="result-more">
+                {!closed && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={busy}
+                    onClick={() => void printTicket(selected.id)}
+                  >
+                    <Icon name="printer" size={18} />
+                    {t('station.print')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={busy}
+                  onClick={() => void openPreview(selected.id)}
+                >
+                  <Icon name="eye" size={18} />
                   {t('station.preview')}
                 </button>
-                <button type="button" className="ghost" onClick={back}>
-                  {t('bal2.back')}
-                </button>
-              </div>
-            )}
-          </div>
+                {!closed && (
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={back}>
+                    <Icon name="arrow-left" size={18} className="icon-flip" />
+                    {t('bal2.back')}
+                  </button>
+                )}
+              </span>
+            </div>
+          </section>
+        )}
 
-          {balance.simulated && <SimulatorPanel />}
-        </>
+        <aside className="side">
+          <TruckCard op={selected} />
+          <JourneyCard step={closed ? 5 : complete ? 4 : 3} />
+        </aside>
+      </div>
+
+      {!complete && (
+        <CaptureBar
+          key={`${selected?.id ?? 'none'}-${redo ? 'redo' : 'second'}`}
+          label={redo ? t('bal.redoCapture') : t('capture.second')}
+          sample={balance.sample}
+          running={balance.running}
+          busy={busy}
+          block={block}
+          onCapture={(request) => void captureNow(request)}
+          onCancel={redo ? stopRedo : undefined}
+          cancelLabel={t('capture.cancelRedo')}
+        />
       )}
+
+      {balance.simulated && <SimulatorPanel />}
+
+      <ConfirmDialog
+        open={confirmSave}
+        busy={busy}
+        icon="check-circle"
+        title={t('station.confirmSave', { ticket: selected.ticketNo })}
+        confirmLabel={t('station.save')}
+        cancelLabel={t('common.cancel')}
+        onCancel={() => setConfirmSave(false)}
+        onConfirm={() => void saveTicket()}
+      >
+        <p>{t('b2.confirmBody')}</p>
+      </ConfirmDialog>
 
       {preview && (
         <TicketPreview

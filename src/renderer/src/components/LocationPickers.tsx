@@ -7,6 +7,7 @@ import {
 } from '@shared/domain/locations'
 import type { OperationType } from '@shared/types'
 import { useI18n } from '../i18n'
+import Field from './Field'
 
 /**
  * Les lieux à renseigner pour un ticket, selon son type (voir `locationFieldsFor`).
@@ -57,10 +58,9 @@ export default function LocationPickers({
   )
 
   return (
-    <div className="pair">
+    <div className={fields === 'both' ? 'pair pair-even' : undefined}>
       {asksFrom(fields) && (
-        <label>
-          {t('station.locationFrom')}
+        <Field label={t('station.locationFrom')}>
           <select
             disabled={disabled}
             value={from || (required ? centralId : '')}
@@ -68,11 +68,10 @@ export default function LocationPickers({
           >
             {options}
           </select>
-        </label>
+        </Field>
       )}
       {asksTo(fields) && (
-        <label>
-          {t(fields === 'to' ? 'station.locationDrop' : 'station.locationTo')}
+        <Field label={t(fields === 'to' ? 'station.locationDrop' : 'station.locationTo')}>
           <select
             disabled={disabled}
             value={to || (required ? centralId : '')}
@@ -80,7 +79,7 @@ export default function LocationPickers({
           >
             {options}
           </select>
-        </label>
+        </Field>
       )}
     </div>
   )

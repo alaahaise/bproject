@@ -2,18 +2,24 @@ import { useState, type FormEvent } from 'react'
 import type { SessionUser } from '@shared/types'
 import caspmLogo from '@shared/assets/caspm-logo.png'
 import { api, call, errorMessage } from '../api'
-import { useI18n } from '../i18n'
 import DbForm from '../components/DbForm'
+import Field from '../components/Field'
+import Guide from '../components/Guide'
+import Icon from '../components/Icon'
+import Segmented from '../components/Segmented'
+import { useI18n, type Lang } from '../i18n'
 
 /**
  * La connexion est le premier écran d'un poste neuf : la configuration de la
  * base doit donc être atteignable ici, sinon personne ne peut entrer pour
- * aller la régler.
+ * aller la régler. La langue aussi se choisit ici : quelqu'un qui lit l'arabe
+ * ne doit pas avoir à se connecter en français pour la changer.
  */
 export default function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
   const { t, lang, setLang } = useI18n()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [showSetup, setShowSetup] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -32,37 +38,67 @@ export default function Login({ onLogin }: { onLogin: (user: SessionUser) => voi
   }
 
   return (
-    <div className="center-page login-page">
-      <div className="login-language">
-        <label htmlFor="login-language">{t('login.language')}</label>
-        <select id="login-language" value={lang} onChange={(e) => setLang(e.target.value as 'fr' | 'ar')}>
-          <option value="fr">Français</option>
-          <option value="ar">العربية</option>
-        </select>
+    <div className="login-page">
+      <div className="login-lang">
+        <Segmented<Lang>
+          label={t('nav.language')}
+          value={lang}
+          onChange={setLang}
+          options={[
+            { value: 'fr', label: 'Français' },
+            { value: 'ar', label: 'العربية' }
+          ]}
+        />
       </div>
-      <form className="card login" onSubmit={submit}>
-        <img className="login-logo" src={caspmLogo} alt="CASPM — Complexe Avicole" />
-        <p className="login-caption">{t('app.title')}</p>
-        <h2>{t('login.title')}</h2>
-        <label>
-          {t('login.username')}
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
-        </label>
-        <label>
-          {t('login.password')}
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        </label>
-        <button type="submit" disabled={busy}>
+
+      <form className="login-card" onSubmit={submit}>
+        <img className="login-logo" src={caspmLogo} alt="CASPM" />
+        <h1>{t('app.title')}</h1>
+        <p className="muted">{t('login.sub')}</p>
+
+        <Field label={t('login.username')}>
+          <input
+            value={username}
+            autoComplete="username"
+            autoFocus
+            onChange={(e) => setUsername(e.target.value)}
+          />
+        </Field>
+
+        <Field label={t('login.password')}>
+          <span className="input-action">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              autoComplete="current-password"
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn btn-secondary"
+              aria-pressed={showPassword}
+              onClick={() => setShowPassword(!showPassword)}
+            >
+              <Icon name={showPassword ? 'eye-off' : 'eye'} size={22} />
+              {showPassword ? t('login.hide') : t('login.show')}
+            </button>
+          </span>
+        </Field>
+
+        {error && <Guide tone="error">{error}</Guide>}
+
+        <button type="submit" className="btn btn-primary btn-xl" disabled={busy}>
           {t('login.submit')}
         </button>
-        {error && <p className="error" role="alert">{error}</p>}
-        <button type="button" className="link" onClick={() => setShowSetup(!showSetup)}>
+
+        <button type="button" className="btn btn-link" onClick={() => setShowSetup(!showSetup)}>
+          <Icon name="settings" size={20} />
           {t('login.setup')}
         </button>
       </form>
 
       {showSetup && (
-        <div className="auth-setup">
+        <div className="login-setup">
           <DbForm />
           <p className="muted">{t('login.hint')}</p>
         </div>

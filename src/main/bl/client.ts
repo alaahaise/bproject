@@ -5,7 +5,7 @@
  * direct, et l'adresse du service est validée avant d'être enregistrée.
  */
 import { z } from 'zod'
-import type { BlLookup } from '@shared/types'
+import type { ArticleCatalogGroup, ArticleOption, BlLookup } from '@shared/types'
 import { buildBlLookup } from '@shared/domain/bl'
 
 const DEFAULT_BL_API_URL = 'http://127.0.0.1:3100'
@@ -22,6 +22,16 @@ const lineSchema = z.object({
   quantity: nullableNumber,
   weightKg: nullableNumber,
   weightSource: z.enum(['line', 'unit', 'article', 'quintal']).nullable().optional()
+})
+
+const articleOptionSchema = z.object({
+  id: z.number().int().positive(),
+  code: z.string().max(50).nullable(),
+  name: z.string().max(250).nullable()
+})
+
+const articleSearchResponseSchema = z.object({
+  articles: z.array(articleOptionSchema).max(50)
 })
 
 const responseSchema = z.object({
@@ -125,4 +135,40 @@ export async function lookupBl(number: string, configuredUrl?: string | null): P
     clientCode: bl.client?.code ?? null,
     lines: parsed.data.lines
   })
+}
+
+export async function searchBlArticles(
+  query: string,
+  group: ArticleCatalogGroup,
+  configuredUrl?: string | null
+): Promise<ArticleOption[]> {
+  const base = blApiBaseUrl(configuredUrl)
+  const params = new URLSearchParams({ q: query, group })
+  let response: Response
+  try {
+    response = await fetch(`${base}/api/articles?${params.toString()}`, {
+      headers: { accept: 'application/json' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    })
+  } catch {
+    throw new Error(
+      `API BL injoignable (${base}). Vérifiez l’adresse dans Paramètres ou que le service est démarré.`
+    )
+  }
+
+  const text = await response.text()
+  if (text.length > MAX_BODY_LENGTH) throw new Error('Réponse de l’API BL trop volumineuse.')
+
+  let body: unknown
+  try {
+    body = JSON.parse(text)
+  } catch {
+    throw new Error('Réponse illisible de l’API BL.')
+  }
+
+  if (!response.ok) throw new Error(messageFromBody(body, response.status))
+  const parsed = articleSearchResponseSchema.safeParse(body)
+  if (!parsed.success) throw new Error('Réponse inattendue de l’API BL.')
+  return parsed.data.articles
 }

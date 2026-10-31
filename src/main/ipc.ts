@@ -12,6 +12,7 @@ import {
   balanceConfigSchema,
   blApiUrlSchema,
   blLookupSchema,
+  articleSearchSchema,
   changePasswordSchema,
   cancelSchema,
   captureSchema,
@@ -32,7 +33,7 @@ import {
 } from '@shared/schemas'
 import type { SessionUser } from '@shared/types'
 import * as auth from './auth'
-import { lookupBl } from './bl/client'
+import { lookupBl, searchBlArticles } from './bl/client'
 import { ensureBlApi } from './bl/process'
 import { migrate } from './db/migrate'
 import * as operations from './db/operations'
@@ -293,6 +294,14 @@ export function registerIpc(): void {
     const settings = loadSettings()
     await ensureBlApi(settings.blApiUrl)
     return lookupBl(number, settings.blApiUrl)
+  })
+
+  ipcMain.handle(CH.blArticles, async (_e, raw) => {
+    requireUser()
+    const { query, group } = parse(articleSearchSchema, raw)
+    const settings = loadSettings()
+    await ensureBlApi(settings.blApiUrl)
+    return searchBlArticles(query, group, settings.blApiUrl)
   })
 
   // ---- Balance ----

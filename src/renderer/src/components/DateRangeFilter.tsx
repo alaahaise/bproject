@@ -39,7 +39,7 @@ export default function DateRangeFilter({
       {(from !== '' || to !== '') && (
         <button
           type="button"
-          className="ghost"
+          className="btn btn-secondary btn-sm"
           onClick={() => {
             onFrom('')
             onTo('')

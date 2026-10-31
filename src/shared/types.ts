@@ -9,6 +9,15 @@ export type WeighKind = (typeof WEIGH_KINDS)[number]
 
 export type OperationStatus = 'OUVERTE' | 'FERMEE' | 'ANNULEE'
 
+/** Article de la base HFSQL proposé dans les sélecteurs de produits. */
+export interface ArticleOption {
+  id: number
+  code: string | null
+  name: string | null
+}
+
+export type ArticleCatalogGroup = 'raw' | 'nutrition' | 'all'
+
 export type UserRole = 'ADMIN' | 'SUPERVISEUR' | 'OPERATEUR'
 
 export interface SessionUser {

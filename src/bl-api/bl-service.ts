@@ -6,7 +6,9 @@
  * qu'avec un test contre HFSQL (`npm run bl:probe`).
  */
 import { parseBlInput, type ParsedBlNumber } from '@shared/domain/bl-number'
+import { searchArticleCatalog } from '@shared/domain/article-catalog'
 import { resolveLineWeight, round3, summarizeWeights } from '@shared/domain/bl-weight'
+import type { ArticleCatalogGroup, ArticleOption } from '@shared/types'
 import type { BlApiConfig } from './config'
 import type { Db, Row } from './db'
 import { getFullDetails } from './full-details'
@@ -117,6 +119,7 @@ export interface GetBlOptions {
 export interface BlService {
   getBl(parsed: ParsedBlNumber, options?: GetBlOptions): Promise<BlResult | BlAmbiguous | null>
   getClient(clientId: number | null): Promise<BlClientDto | null>
+  searchArticles(query: string, group: ArticleCatalogGroup): Promise<ArticleOption[]>
 }
 
 export function createBlService(
@@ -125,18 +128,27 @@ export function createBlService(
   config: Pick<BlApiConfig, 'blType' | 'articleCacheTtlMs'>,
   now: () => number = Date.now
 ): BlService {
-  let articleCache = { loadedAt: 0, forcedAt: 0, map: new Map<number, ArticleInfo>() }
+  let articleCache = {
+    loadedAt: 0,
+    forcedAt: 0,
+    hasLoaded: false,
+    map: new Map<number, ArticleInfo>()
+  }
+  let articleLoadPromise: Promise<Map<number, ArticleInfo>> | null = null
 
   async function loadArticles(force = false): Promise<Map<number, ArticleInfo>> {
     const age = now() - articleCache.loadedAt
-    const fresh = articleCache.map.size > 0 && age < config.articleCacheTtlMs
+    const fresh = articleCache.hasLoaded && age < config.articleCacheTtlMs
     if (fresh && !force) return articleCache.map
     // Un rechargement forcé trop rapproché est ignoré (article supprimé dans HFSQL).
     if (force && now() - articleCache.forcedAt < MIN_FORCED_RELOAD_MS && articleCache.map.size > 0) {
       return articleCache.map
     }
 
-    const rows = await db.query(
+    if (articleLoadPromise) return articleLoadPromise
+
+    const loading = (async () => {
+      const rows = await db.query(
       `SELECT IDArticle AS id,
               Reference AS code,
               Libelle AS name,
@@ -148,27 +160,39 @@ export function createBlService(
               Categorie AS category,
               Poids_Brut AS weight
          FROM Articles`
-    )
+      )
 
-    const map = new Map<number, ArticleInfo>()
-    for (const row of rows) {
-      const id = toNumber(read(row, 'id'))
-      if (id === null) continue
-      map.set(id, {
-        code: clean(read(row, 'code')),
-        name: clean(read(row, 'name')),
-        barcode: clean(read(row, 'barcode')),
-        familyId: toNumber(read(row, 'familyId')),
-        subFamilyId: toNumber(read(row, 'subFamilyId')),
-        unitId: toNumber(read(row, 'unitId')),
-        classification: toNumber(read(row, 'classification')),
-        category: toNumber(read(row, 'category')),
-        weight: toNumber(read(row, 'weight'))
-      })
+      const map = new Map<number, ArticleInfo>()
+      for (const row of rows) {
+        const id = toNumber(read(row, 'id'))
+        if (id === null) continue
+        map.set(id, {
+          code: clean(read(row, 'code')),
+          name: clean(read(row, 'name')),
+          barcode: clean(read(row, 'barcode')),
+          familyId: toNumber(read(row, 'familyId')),
+          subFamilyId: toNumber(read(row, 'subFamilyId')),
+          unitId: toNumber(read(row, 'unitId')),
+          classification: toNumber(read(row, 'classification')),
+          category: toNumber(read(row, 'category')),
+          weight: toNumber(read(row, 'weight'))
+        })
+      }
+
+      articleCache = {
+        loadedAt: now(),
+        forcedAt: force ? now() : articleCache.forcedAt,
+        hasLoaded: true,
+        map
+      }
+      return map
+    })()
+    articleLoadPromise = loading
+    try {
+      return await loading
+    } finally {
+      if (articleLoadPromise === loading) articleLoadPromise = null
     }
-
-    articleCache = { loadedAt: now(), forcedAt: force ? now() : articleCache.forcedAt, map }
-    return map
   }
 
   async function getClient(clientId: number | null): Promise<BlClientDto | null> {
@@ -203,6 +227,19 @@ export function createBlService(
       email: clean(read(row, 'email')),
       taxId: clean(read(row, 'taxId'))
     }
+  }
+
+  async function searchArticles(
+    query: string,
+    group: ArticleCatalogGroup
+  ): Promise<ArticleOption[]> {
+    const articles = await loadArticles()
+    return searchArticleCatalog(
+      [...articles].map(([id, article]) => ({ id, code: article.code, name: article.name })),
+      query,
+      group,
+      50
+    )
   }
 
   async function getLines(blId: number): Promise<BlLineDto[]> {
@@ -372,7 +409,7 @@ export function createBlService(
     }
   }
 
-  return { getBl, getClient }
+  return { getBl, getClient, searchArticles }
 }
 
 /** Raccourci pour les scripts : texte saisi → BL. */

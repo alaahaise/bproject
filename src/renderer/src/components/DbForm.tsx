@@ -2,6 +2,9 @@ import { useEffect, useState, type FormEvent } from 'react'
 import type { DbConfig } from '@shared/channels'
 import { api, call, errorMessage } from '../api'
 import { useI18n } from '../i18n'
+import Field from './Field'
+import Guide from './Guide'
+import Icon from './Icon'
 
 const EMPTY: DbConfig = {
   host: 'localhost',
@@ -41,11 +44,7 @@ export default function DbForm({ onConnected }: { onConnected?: () => void }) {
       const result = await call(api.settings.saveDb(cfg))
       setOk(result.ok)
       setMessage(result.message)
-      if (result.ok) {
-        setHasSavedPassword(hasSavedPassword || cfg.password !== '')
-        setCfg((previous) => ({ ...previous, password: '' }))
-        onConnected?.()
-      }
+      if (result.ok) onConnected?.()
     } catch (err) {
       setOk(false)
       setMessage(errorMessage(err))
@@ -70,50 +69,66 @@ export default function DbForm({ onConnected }: { onConnected?: () => void }) {
   }
 
   return (
-    <form className="card" onSubmit={connect}>
+    <form className="panel settings-card" onSubmit={connect}>
       <h2>{t('db.title')}</h2>
-      <div className="grid">
-        <label>
-          {t('db.host')}
-          <input value={cfg.host} onChange={(e) => setCfg({ ...cfg, host: e.target.value })} />
-        </label>
-        <label>
-          {t('db.port')}
+      <div className="form-grid">
+        <Field label={t('db.host')}>
+          <input
+            dir="ltr"
+            value={cfg.host}
+            onChange={(e) => setCfg({ ...cfg, host: e.target.value })}
+          />
+        </Field>
+        <Field label={t('db.port')}>
           <input
             type="number"
+            dir="ltr"
             value={cfg.port}
             onChange={(e) => setCfg({ ...cfg, port: Number(e.target.value) })}
           />
-        </label>
-        <label>
-          {t('db.user')}
-          <input value={cfg.user} onChange={(e) => setCfg({ ...cfg, user: e.target.value })} />
-        </label>
-        <label>
-          {t('db.password')}
+        </Field>
+        <Field label={t('db.user')}>
+          <input
+            dir="ltr"
+            value={cfg.user}
+            onChange={(e) => setCfg({ ...cfg, user: e.target.value })}
+          />
+        </Field>
+        <Field label={t('db.password')}>
           <input
             type="password"
+            dir="ltr"
+            autoComplete="off"
+            placeholder={hasSavedPassword ? t('db.passwordSaved') : undefined}
             value={cfg.password}
-            placeholder={hasSavedPassword ? t('db.passwordSaved') : ''}
             onChange={(e) => setCfg({ ...cfg, password: e.target.value })}
           />
-        </label>
-        <label>
-          {t('db.database')}
-          <input value={cfg.database} onChange={(e) => setCfg({ ...cfg, database: e.target.value })} />
-        </label>
+        </Field>
+        <Field label={t('db.database')}>
+          <input
+            dir="ltr"
+            value={cfg.database}
+            onChange={(e) => setCfg({ ...cfg, database: e.target.value })}
+          />
+        </Field>
       </div>
 
-      <div className="row">
-        <button type="submit" disabled={busy}>
+      <div className="button-row">
+        <button type="submit" className="btn btn-primary" disabled={busy}>
+          <Icon name="check" size={20} />
           {t('db.test')}
         </button>
-        <button type="button" className="ghost" disabled={busy} onClick={() => void createTables()}>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          disabled={busy}
+          onClick={() => void createTables()}
+        >
           {t('db.migrate')}
         </button>
       </div>
 
-      {message && <p className={ok ? 'ok' : 'error'}>{message}</p>}
+      {message && <Guide tone={ok ? 'ok' : 'error'}>{message}</Guide>}
     </form>
   )
 }

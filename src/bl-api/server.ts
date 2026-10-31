@@ -6,6 +6,7 @@
 import { existsSync } from 'node:fs'
 import express, { type ErrorRequestHandler, type Express } from 'express'
 import { BlNumberError, parseBlInput } from '@shared/domain/bl-number'
+import { isArticleCatalogGroup } from '@shared/domain/article-catalog'
 import type { BlApiConfig } from './config'
 import { DatabaseUnavailableError, type Db } from './db'
 import { isAmbiguous } from './types'
@@ -124,6 +125,29 @@ export function createApp({ config, db, schema, service, log = console.log }: Ap
       }
 
       res.json({ found: true, ...result })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/articles', async (req, res, next) => {
+    try {
+      const queryParam = req.query.q
+      const groupParam = req.query.group
+      if (
+        (queryParam !== undefined && typeof queryParam !== 'string') ||
+        (groupParam !== undefined && typeof groupParam !== 'string')
+      ) {
+        res.status(400).json({ error: 'bad_request', message: 'Recherche d’articles invalide.' })
+        return
+      }
+      const query = queryParam?.trim() ?? ''
+      const group = groupParam ?? 'all'
+      if (query.length > 80 || !isArticleCatalogGroup(group)) {
+        res.status(400).json({ error: 'bad_request', message: 'Recherche d’articles invalide.' })
+        return
+      }
+      res.json({ articles: await service.searchArticles(query, group) })
     } catch (error) {
       next(error)
     }
